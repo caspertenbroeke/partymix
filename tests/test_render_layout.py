@@ -232,3 +232,24 @@ def test_tempo_in_jump_at_cut():
     assert lay.tempo_at(cut + 20) == pytest.approx(138.0, abs=0.01)
     np.testing.assert_allclose(lay.T(np.arange(cut + 1)), base.T(np.arange(cut + 1)))
     assert estimate_duration(p) < estimate_duration(_plan(tempos=(126.0, 128.0), ovs=(16, 0), start=126.0, end=138.0))
+
+
+def test_master_hits_target_lufs(tmp_path):
+    """Heavily limited material: iterative passes still land within 0.3 LU, TP <= -1 dBTP."""
+    from partymix.render.master import master_to_files, true_peak_db
+    from partymix.render.loudness import integrated_loudness
+    sr = 44100
+    rng = np.random.default_rng(5)
+    n = sr * 20
+    t = np.arange(n) / sr
+    x = 0.05 * rng.standard_normal((n, 2)) + 0.3 * np.stack([np.sin(2 * np.pi * 50 * t)] * 2, 1)
+    x[:: sr // 2] *= 1.0
+    for k in range(0, n - 400, sr // 2):     # sharp transients -> lots of gain reduction
+        x[k:k + 400] += 0.9 * np.exp(-np.arange(400) / 80)[:, None]
+    x = x.astype(np.float32)
+    rep = master_to_files(lambda s, c: x[s:s + c], n, sr, str(tmp_path / "m.wav"), ["wav"], str(tmp_path),
+                          target_lufs=-8.0)
+    y = __import__("soundfile").read(rep.files[0])[0]
+    assert abs(integrated_loudness(y, sr) + 8.0) <= 0.3
+    assert true_peak_db(y) <= -0.99
+    assert rep.max_gain_reduction_db > 3

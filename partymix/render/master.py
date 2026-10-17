@@ -29,6 +29,8 @@ __all__ = ["TruePeakLimiter", "true_peak_db", "master_to_files", "write_cue", "w
            "CueEntry", "MasterReport"]
 
 CHUNK_SEC = 10.0
+LIMIT_PASSES = 3      # limiter passes to reach target_lufs
+LUFS_TOL = 0.3        # LU
 _OS = 4
 _TAPS = 49                  # odd -> integer group delay (24 sub-samples = 6 samples)
 _FIR = firwin(_TAPS, 1.0 / _OS, window=("kaiser", 8.0)) * _OS
@@ -202,10 +204,13 @@ def master_to_files(read_chunk: Callable[[int, int], np.ndarray], frames: int, s
     gain_db = float(target_lufs - lin) if np.isfinite(lin) else 0.0
     gain = 10 ** (gain_db / 20)
 
-    # 2. limiter -> float32 temp file (re-run once with a lower ceiling if it overshoots)
+    # 2. limiter -> float32 temp file.  Limiting lowers loudness, so iterate (max LIMIT_PASSES):
+    #    measure output LUFS + true peak, correct the pre-gain (secant step) and the ceiling.
     lim_path = os.path.join(workdir, "limited.f32")
     ceiling = true_peak_db_ - 0.05
-    for attempt in range(3):
+    hist = []                       # (pre-gain dB, output LUFS)
+    for attempt in range(LIMIT_PASSES):
+        gain = 10 ** (gain_db / 20)
         lim = TruePeakLimiter(sr, ceiling)
         P = lim.P
         tp_out = 0.0
@@ -229,17 +234,39 @@ def master_to_files(read_chunk: Callable[[int, int], np.ndarray], frames: int, s
                 prev_tail = y[-16:]
                 out_meter.feed(y)
                 y.astype(np.float32).tofile(fo)
-                prog(0.25 + 0.45 * min(1.0, (s + n) / frames), "Limiter")
+                prog(0.25 + 0.45 * min(1.0, (attempt + (s + n) / frames) / LIMIT_PASSES),
+                     f"Limiter (ronde {attempt + 1})")
         tp_db = 20 * np.log10(max(tp_out, 1e-12))
-        if tp_db <= true_peak_db_ + 0.01:
+        out_lufs = out_meter.result()
+        if not np.isfinite(out_lufs):
             break
-        ceiling -= (tp_db - true_peak_db_) + 0.05
-    out_lufs = out_meter.result()
+        hist.append((gain_db, out_lufs))
+        err = target_lufs - out_lufs
+        tp_ok = tp_db <= true_peak_db_ + 0.01
+        if tp_ok and abs(err) <= LUFS_TOL:
+            break
+        if attempt == LIMIT_PASSES - 1:
+            break
+        if not tp_ok:
+            ceiling -= (tp_db - true_peak_db_) + 0.05
+        slope = 0.8                 # d(out LUFS)/d(gain dB) is < 1 when the limiter works
+        if len(hist) >= 2 and abs(hist[-1][0] - hist[-2][0]) > 0.05:
+            slope = (hist[-1][1] - hist[-2][1]) / (hist[-1][0] - hist[-2][0])
+            slope = float(np.clip(slope, 0.2, 1.0))
+        gain_db += float(np.clip(err / slope, -6.0, 6.0))
+    # static safety trim if the last pass still overshoots the true-peak ceiling
+    post = 1.0
+    if tp_db > true_peak_db_ + 0.01:
+        post = 10 ** ((true_peak_db_ - 0.01 - tp_db) / 20)
+        out_lufs += 20 * np.log10(post)
+        tp_db = true_peak_db_ - 0.01
+    prog(0.70, "Limiter klaar")
 
     def read_lim(start, count):
         with open(lim_path, "rb") as f:
             f.seek(start * 8)
-            return np.fromfile(f, dtype=np.float32, count=count * 2).reshape(-1, 2)
+            y = np.fromfile(f, dtype=np.float32, count=count * 2).reshape(-1, 2)
+        return y * np.float32(post) if post != 1.0 else y
 
     # 3. write files
     base = Path(out_path)

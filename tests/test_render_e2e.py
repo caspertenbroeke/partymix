@@ -55,6 +55,8 @@ def test_render_small_mix(tmp_path):
     y = sf.read(str(out))[0]
     from partymix.render.master import true_peak_db
     assert true_peak_db(y) <= -0.95
+    from partymix.render.loudness import integrated_loudness
+    assert abs(integrated_loudness(y, SR) - (-9.5)) <= 0.3
     assert np.abs(y).max() > 0.1
     assert msgs[-1][0] == 1.0 and all(0 <= f <= 1 for f, _ in msgs)
     assert [f for f, _ in msgs] == sorted(f for f, _ in msgs)

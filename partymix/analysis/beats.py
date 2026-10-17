@@ -3,9 +3,10 @@
 Pipeline (identical to the hand-made ``reference/grid2.py`` / ``reference/bars.py``):
 
 1. madmom ``RNNDownBeatProcessor`` + ``DBNDownBeatTrackingProcessor(beats_per_bar=[4], fps=100,
-   min_bpm=100, max_bpm=160)``.  The RNN runs on ≤ 4-min chunks with 10 s overlap (activations
-   cross-faded).  The DBN's Viterbi back-pointer table grows with ``frames × states`` (a 30-min
-   file was OOM-killed at 7 GB), so files longer than 7 min are decoded in 5-min windows with
+   min_bpm=100, max_bpm=160)``.  Up to 7 min everything runs in one pass (identical to
+   madmom on the whole file).  Longer files: the RNN runs on 4-min chunks with 30 s overlap.
+   The DBN's Viterbi back-pointer table grows with ``frames × states`` (a 30-min file was
+   OOM-killed at 7 GB), so files longer than 7 min are decoded in 5-min windows with
    60 s overlap, stitched in the middle of the overlap with bar labels re-aligned.  Shorter files
    are decoded in one go: DBN windows change the beat phase on ambiguous tracks (Stereo Love
    came out half a beat off when decoded in 4-min pieces).
@@ -26,7 +27,7 @@ FPS = 100
 MIN_BPM = 100.0
 MAX_BPM = 160.0
 CHUNK_S = 240.0
-OVERLAP_S = 10.0
+OVERLAP_S = 30.0
 # The DBN Viterbi table is uint32[frames, ~11.5k states] (≈ 46 MB per 10 s of audio).
 DBN_MAX_S = 420.0           # decode in one go up to 7 min (≈ 1.9 GB peak)
 DBN_WIN_S = 300.0
@@ -112,15 +113,27 @@ def _stitch(a: np.ndarray, b: np.ndarray, b_start: float, overlap: float) -> np.
 def madmom_activations(audio: np.ndarray, sr: int, chunk_s: float = CHUNK_S,
                        overlap_s: float = OVERLAP_S, progress: ProgressCb = None,
                        cancel: Optional[Callable[[], bool]] = None) -> np.ndarray:
-    """RNN beat/downbeat activations ``[frames, 2]`` at 100 fps, computed in overlapping chunks
-    (linear cross-fade in the overlap) so memory stays bounded for long files."""
+    """RNN beat/downbeat activations ``[frames, 2]`` at 100 fps.
+
+    Files up to ``DBN_MAX_S`` are processed in one pass: the network is a bidirectional LSTM,
+    and chunking changes the activations enough to flip the DBN's bar phase (Memories, 5:21,
+    came out half a bar off with 4-min chunks).  Longer files are processed in ``chunk_s``
+    chunks overlapping by ``overlap_s``; only the middle third of each overlap is cross-faded,
+    so both sides have ≥ ``overlap_s / 3`` of context at the seam.
+    """
     mono = _to_mono(audio)
     n = len(mono)
+    if n <= DBN_MAX_S * sr:
+        act = _activations(mono, sr)
+        if progress:
+            progress(1.0)
+        return act
     hop = sr // FPS
     clen = int(chunk_s * FPS) * hop
     step = int((chunk_s - overlap_s) * FPS) * hop
-    ov = clen - step
-    starts = [0] if n <= clen else list(range(0, n - ov, step))
+    ov_f = (clen - step) // hop
+    third = ov_f // 3
+    starts = list(range(0, n - (clen - step), step))
     n_frames = int(np.ceil(n / hop))
     act = np.zeros((n_frames, 2), np.float32)
     for k, s in enumerate(starts):
@@ -132,10 +145,11 @@ def madmom_activations(audio: np.ndarray, sr: int, chunk_s: float = CHUNK_S,
         if k == 0:
             act[f0:f0 + len(a)] = a
         else:
-            nov = min(ov // hop, len(a))
-            w = np.linspace(0.0, 1.0, nov, dtype=np.float32)[:, None]
-            act[f0:f0 + nov] = act[f0:f0 + nov] * (1 - w) + a[:nov] * w
-            act[f0 + nov:f0 + len(a)] = a[nov:]
+            w = np.concatenate([np.zeros(third), np.linspace(0.0, 1.0, ov_f - 2 * third),
+                                np.ones(third)]).astype(np.float32)[: len(a), None]
+            m = len(w)
+            act[f0:f0 + m] = act[f0:f0 + m] * (1 - w) + a[:m] * w
+            act[f0 + m:f0 + len(a)] = a[m:]
         if progress:
             progress((k + 1) / len(starts))
     return act
