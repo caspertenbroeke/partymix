@@ -184,7 +184,7 @@ def sections(bass: Sequence[float], rms: Sequence[float], high: Sequence[float],
             continue
         nxt = cls[i + 1] if i + 1 < len(cls) else None
         rising = z - a >= 2 and (np.polyfit(np.arange(z - a), R[a:z] + H[a:z], 1)[0] > 0.4)
-        if nxt == "drop" and rising:
+        if nxt == "drop" and rising and i > 0:
             kinds.append("build")
         elif i < first_d:
             kinds.append("intro")

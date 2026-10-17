@@ -487,6 +487,7 @@ class MainWindow(QMainWindow):
         if self.mixing and not self.confirm("Mix wordt gemaakt", "De mix is nog niet klaar. Toch afsluiten?"):
             e.ignore()
             return
+        self._plan_timer.stop()
         self._save_settings()
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.sync()
@@ -862,7 +863,9 @@ class MainWindow(QMainWindow):
         except Exception:
             self.last_tracklist, entries = "", []
         self._fill_tracklist(entries, total)
-        names = " · ".join(Path(o).name for o in self.last_outputs)
+        audio = [o for o in self.last_outputs if is_audio(o)] or self.last_outputs
+        self.last_outputs = audio + [o for o in self.last_outputs if o not in audio]
+        names = " · ".join(Path(o).name for o in audio)
         self.result_file.setText(names + (f"  ({fmt_time(total)})" if total else ""))
         self.result_file.setToolTip("\n".join(self.last_outputs))
         self.result_box.show()
