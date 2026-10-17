@@ -7,7 +7,10 @@ Doel: Windows-app die precies doet wat "Half uur mix v2" deed (zie reference/PLA
 - Planner (`partymix/planner/`): order_tracks, pair_score, plan_mix(+report), tempo_in bij echo_cut, MixPlan.notes. 16 tests groen.
   Op de 14 echte tracks: 30:06 bij doel 30 min, keuzes ≈ handplan v2.
 
-## Was nog bezig (agents, check of hun bestanden af zijn — WIP gecommit)
+## Status 01:30
+Alle 5 modules af. Windows CI volledig groen (incl. installer + selftest op Windows). Bezig: end-to-end test op 14 echte tracks (test_out/e2e), daarna release v0.1.0.
+
+## Was nog bezig (historisch) (agents, check of hun bestanden af zijn — WIP gecommit)
 - analysis (`partymix/audio_io.py`, `partymix/analysis/*`): madmom beats/downbeats + grid-fit, key, ONNX vocal separation (port van audio-separator, zonder torch), per-bar features, cache.
 - render (`partymix/render/*`): layout (moet tempo_in ondersteunen), rubberband timemap stretch, mixer (port mix2.py), master (limiter, FLAC/WAV 24-bit, MP3), verify.
   Validatie: v2 reproduceren uit /home/claude/mix/inst + reference/plan.json en vergelijken met /home/claude/mix/mix2_raw.wav.

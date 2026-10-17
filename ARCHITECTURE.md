@@ -22,7 +22,8 @@ Per input file, cached in `%LOCALAPPDATA%/PartyMix/cache/<sha1-of-file>/`:
 * **key**: madmom `CNNKeyRecognitionProcessor` → Camelot code ("8A", "10B" …).
 * **vocals**: ONNX model `UVR-MDX-NET-Inst_HQ_3.onnx` (MDX-Net; n_fft 6144, dim_f 3072, dim_t 2**8, hop 1024,
   compensate 1.022, primary stem = Instrumental; vocals = mix − instrumental) run with onnxruntime CPU, **no torch**.
-  Writes `inst.flac` and `voc.flac` (float, lossless) in the cache dir.
+  Writes `audio.flac`, `inst.flac`, `voc.flac` (24-bit, lossless) in the cache dir. They are stored attenuated by one
+  power-of-two factor (comment tag `partymix_gain=`); always read them with `audio_io.read_audio` / `analysis.load_stems`.
 * **per-bar features** (one row per bar from first downbeat): bass dB (20–150 Hz), mid dB (150–3 k), high dB (3–11 k),
   vocal dB (from vocal stem), RMS dB. See `reference/bars.py`, `reference/vox.py`.
 * **phrase offset**: bar index (0–7) where 8-bar phrases start (novelty peaks on bass/vocal changes).

@@ -109,11 +109,16 @@ def build_timemap(analysis: TrackAnalysis, start_bar: int, end_bar: int, layout:
 
 def _read_slice(path: str, a: int, z: int) -> np.ndarray:
     """Read source samples ``[a, z)`` as float32 stereo; negative ``a`` / past-end -> silence."""
+    import re
     with sf.SoundFile(path) as f:
         n = f.frames
         lo, hi = max(a, 0), min(z, n)
         f.seek(lo)
         x = f.read(max(hi - lo, 0), dtype="float32", always_2d=True)
+        # cache stems are stored attenuated by a power of two (see audio_io.write_flac); undo it
+        m = re.search(r"partymix_gain=([0-9.eE+-]+)", f.comment or "")
+    if m:
+        x *= np.float32(float(m.group(1)))
     if x.shape[1] == 1:
         x = np.repeat(x, 2, axis=1)
     elif x.shape[1] > 2:
