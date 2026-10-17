@@ -25,7 +25,7 @@ import queue
 import sys
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 __all__ = ["WorkerPool", "JobEvent", "CancelToken", "Cancelled", "dutch_error",

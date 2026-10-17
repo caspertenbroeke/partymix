@@ -6,7 +6,7 @@ real implementation on top of :class:`partymix.worker.WorkerPool`; tests and ``-
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from PySide6.QtCore import QObject, QTimer, Signal
 

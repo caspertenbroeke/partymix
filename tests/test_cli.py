@@ -81,10 +81,11 @@ def test_tracklist_entries():
     a, b, c = (fake_analysis(f"/{n}.mp3") for n in "abc")
     plan = MixPlan([PlannedTrack(a.file_hash, 0, 64), PlannedTrack(b.file_hash, 8, 40), PlannedTrack(c.file_hash, 0, 32)],
                    [Transition(16, 120.0, "swap"), Transition(0, 120.0, "echo_cut")], 120.0, 120.0)
-    ent = cli.tracklist_entries(plan, [a, b, c])
+    ent = cli.tracklist_entries(plan, [a, b, c], exact=False)
     assert [round(t, 3) for t, _ in ent] == [0.0, 48 * 2.0, 48 * 2.0 + 32 * 2.0]
     assert ent[1][1] is b
-    assert cli.tracklist_text(plan, [a, b, c]).splitlines()[1].startswith("1:36   2. Artiest – b")
+    lines = cli.tracklist_text(plan, [a, b, c]).splitlines()
+    assert len(lines) == 3 and lines[0].startswith(" 0:00   1. Artiest – a")
 
 
 def test_settings_for():

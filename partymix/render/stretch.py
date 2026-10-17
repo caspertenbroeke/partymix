@@ -67,6 +67,15 @@ def stem_path(analysis: TrackAnalysis, part: str) -> str:
     raise RenderError(f"Stem '{part}' ontbreekt in {d} ({analysis.title or analysis.path})")
 
 
+def _q_samples(t: float, sr: int) -> int:
+    """Sample index of time ``t`` quantised like the reference (``ffmpeg -ss/-to "%.5f"``:
+    10 us steps, then microseconds -> samples rounded half up).  Keeps renders bit-compatible
+    with ``reference/engine.py``; rubberband output is sensitive to 1-sample input shifts."""
+    us = int(round(float(f"{t:.5f}") * 1e6))
+    num = us * sr
+    return (num + 500000) // 1000000 if num >= 0 else -((-num + 500000) // 1000000)
+
+
 def build_timemap(analysis: TrackAnalysis, start_bar: int, end_bar: int, layout: Layout, index: int,
                   sr: int, src_frames: int, margin: float = MARGIN_SEC, tail_bars: int = TAIL_BARS):
     """Compute the slice and the rubberband timemap for one track.
@@ -78,9 +87,9 @@ def build_timemap(analysis: TrackAnalysis, start_bar: int, end_bar: int, layout:
     s, e = start_bar, end_bar
     t_s = analysis.bar_time(s)
     a_sec = t_s - margin               # may be < 0: the slice is then padded with silence
-    a = int(round(a_sec * sr))
+    a = _q_samples(a_sec, sr)
     z_t = min(analysis.bar_time(e + tail_bars), analysis.beats[-1] + 0.4, src_frames / sr)
-    z = int(round(z_t * sr))
+    z = min(a + int(round((float(f"{z_t:.5f}") - float(f"{a_sec:.5f}")) * sr)), src_frames)
     if z <= a + sr // 10:
         raise RenderError(f"Segment van {analysis.title or analysis.path} is leeg (maat {s}-{e})")
     pre = t_s - a_sec

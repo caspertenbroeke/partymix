@@ -15,7 +15,6 @@ import re
 import sys
 import threading
 import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -62,6 +61,16 @@ def guess_title_artist(path: str) -> Tuple[str, str]:
     return stem, ""
 
 
+def clean_step(text: str, path: str) -> str:
+    """Drop a leading "<file name>: " from analysis progress messages (the UI shows the name already)."""
+    text = (text or "").strip()
+    name = Path(path).name
+    for prefix in (name + ":", Path(path).stem + ":"):
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+    return text[:1].upper() + text[1:] if text else text
+
+
 def fmt_time(seconds: Optional[float], hours: bool = False) -> str:
     if seconds is None:
         return "–"
@@ -73,13 +82,22 @@ def fmt_time(seconds: Optional[float], hours: bool = False) -> str:
     return f"{m}:{sec:02d}"
 
 
-def tracklist_entries(plan, analyses) -> List[Tuple[float, object]]:
-    """Approximate start time (s, in the mix) of each planned track → [(seconds, TrackAnalysis|None)].
+def tracklist_entries(plan, analyses, exact: bool = True) -> List[Tuple[float, object]]:
+    """Start time (s, in the mix) of each planned track → [(seconds, TrackAnalysis|None)].
 
-    Track i plays source bars [start_bar, end_bar); the next track starts when track i reaches
+    With ``exact`` the render module's own layout is used (the moment each track takes over, the same
+    times as in the .cue file). Otherwise / as fallback an approximation: track i plays source bars [start_bar, end_bar); the next track starts when track i reaches
     ``end_bar - overlap_bars``. Tempo of a track's solo part ramps between the transition tempos, so the
     average of both ends is used for the bar length (60 * 4 / bpm)."""
     by_hash = {a.file_hash: a for a in analyses}
+    if exact:
+        try:
+            from partymix.render import compute_layout, order_analyses, track_cues
+            an = order_analyses(plan, analyses)
+            cues = track_cues(plan, compute_layout(plan, an), an)
+            return [(float(c.time), a) for c, a in zip(cues, an)]
+        except Exception:
+            pass
     tr = plan.transitions
     out = []
     t = 0.0
@@ -105,7 +123,7 @@ def tracklist_text(plan, analyses, total_seconds: Optional[float] = None) -> str
             name = "?"
         else:
             name = f"{a.artist} – {a.title}" if a.artist else a.title
-        lines.append(f"{fmt_time(t, hours)}  {i:>2}. {name}")
+        lines.append(f"{fmt_time(t, hours):>{8 if hours else 5}}  {i:>2}. {name}")
     return "\n".join(lines)
 
 
@@ -191,8 +209,9 @@ def analyze_files(files: Sequence[str], workers: Optional[int] = None, progress:
             if ev.kind == "progress":
                 fracs[i] = ev.fraction if ev.fraction is not None else fracs.get(i, 0.0)
                 overall = (len(results) + len(failures) + sum(fracs.values())) / n
+                step = clean_step(ev.text, files[i])
                 progress.show(overall, f"Analyseren {len(results) + len(failures) + 1}/{n}: {name}"
-                              + (f" – {ev.text}" if ev.text else ""))
+                              + (f" – {step}" if step else ""))
             elif ev.kind == "done":
                 fracs.pop(i, None)
                 results[i] = ev.result
@@ -368,7 +387,7 @@ def cmd_all(args) -> int:
 
 def cmd_gui(args) -> int:
     from partymix.gui import main as gui_main
-    return gui_main(demo=getattr(args, "demo", False))
+    return gui_main(demo=getattr(args, "demo", False), workers=getattr(args, "workers", None))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -416,6 +435,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("gui", help="grafische interface starten")
     sp.add_argument("--demo", action="store_true", help="met voorbeeldnummers (geen echte analyse)")
+    sp.add_argument("--workers", type=int, default=None, help="aantal parallelle analyses (standaard 1–2)")
     sp.set_defaults(func=cmd_gui)
     return p
 

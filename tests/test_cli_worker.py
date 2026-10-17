@@ -2,8 +2,6 @@
 import os
 import time
 
-import pytest
-
 from partymix.worker import WorkerPool, parse_progress, dutch_error, CancelToken
 
 HERE = __name__  # module name as importable by the spawned children (tests dir is on sys.path)

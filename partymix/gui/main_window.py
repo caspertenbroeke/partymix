@@ -9,15 +9,15 @@ from typing import List, Optional
 from PySide6.QtCore import QSettings, QStandardPaths, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
-                               QApplication, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
-                               QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStackedWidget,
+                               QApplication, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
+                               QProgressBar, QPushButton, QScrollArea, QSpinBox, QStackedWidget,
                                QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
                                QVBoxLayout, QWidget)
 
-from partymix.cli import expand_inputs, fmt_time, is_audio, tracklist_entries, tracklist_text, AUDIO_EXTS
+from partymix.cli import clean_step, expand_inputs, fmt_time, is_audio, tracklist_entries, tracklist_text, AUDIO_EXTS
 from partymix.gui import theme
 from partymix.gui.backend import Backend
-from partymix.gui.models import FAILED, READY, RUNNING, WAITING, TrackModel, track_key
+from partymix.gui.models import FAILED, READY, RUNNING, WAITING, TrackModel
 from partymix.gui.widgets import Card, CurveWidget, DropZone, Legend, TrackTable
 
 ASSETS = Path(__file__).resolve().parent / "assets"
@@ -397,8 +397,8 @@ class MainWindow(QMainWindow):
             col.addWidget(t)
             row.addLayout(col, 1)
             hl.addLayout(row)
-        card.lay.addWidget(self.howto)
-        card.lay.addStretch(1)
+        hl.addStretch(1)
+        card.lay.addWidget(self.howto, 1)
         return card
 
     def _connect(self) -> None:
@@ -673,7 +673,7 @@ class MainWindow(QMainWindow):
         if r < 0:
             return
         it = self.model.items[r]
-        changes = {"status": RUNNING, "step": text or it.step}
+        changes = {"status": RUNNING, "step": clean_step(text, it.path) or it.step}
         if frac >= 0:
             changes["progress"] = frac
         self.model.update_item(key, **changes)

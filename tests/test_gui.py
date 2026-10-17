@@ -160,11 +160,13 @@ def test_render_flow_with_mocked_worker(make_window, qtbot, tmp_path):
     assert w.result_box.isVisible()
     assert len(w.last_outputs) == 2
     lines = w.last_tracklist.splitlines()
-    assert len(lines) == 14 and lines[0].startswith("0:00")
+    assert len(lines) == 14 and lines[0].strip().startswith("0:00")
     w.play_result()
     w.open_result_folder()
     assert w.opened[0].endswith(".flac") and w.opened[1] == str(Path(s.out_path).parent)
     shot(w, "done")
+    w.resize(1280, 720)                          # typical laptop: right column must stay usable
+    shot(w, "done_small")
     # settings persisted
     assert w.settings.value("mp3") in (True, "true")
 

@@ -92,7 +92,7 @@ def write_chevrons() -> None:
 
 
 def main() -> int:
-    app = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])  # noqa: F841
+    _app = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])  # needed for QPainter text/AA
     ASSETS.mkdir(parents=True, exist_ok=True)
     render_icon(256).save(str(ASSETS / "icon.png"))
     write_ico(ASSETS / "icon.ico")
