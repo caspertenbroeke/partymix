@@ -6,7 +6,7 @@ Build (from the repo root, after `python packaging/fetch_tools.py`):
 
 Output: dist/PartyMix/
     PartyMix.exe        windowed GUI (no console)
-    partymix-cli.exe    same program with a console: CLI sub-commands and `--selftest`
+    partymix-cli.exe    same program with a console: CLI sub-commands, `--selftest`, `--bundle-selftest`
     _internal/          Python runtime, libraries, data  (== sys._MEIPASS == paths.bundle_dir())
         bin/            ffmpeg.exe, ffprobe.exe, rubberband.exe, rubberband-r3.exe, sndfile.dll
         models/         UVR-MDX-NET-Inst_HQ_3.onnx
@@ -60,7 +60,7 @@ hiddenimports = []
 # Our own package: every submodule (the launcher uses runpy, so static analysis sees nothing)
 # plus non-Python files (e.g. partymix/gui/assets/*).
 hiddenimports += collect_submodules("partymix")
-hiddenimports += ["partymix_selftest"]  # packaging/partymix_selftest.py, used by `--selftest`
+hiddenimports += ["partymix_selftest"]  # packaging/partymix_selftest.py, used by `--bundle-selftest`
 datas += collect_data_files("partymix", excludes=["**/__pycache__/**"])
 
 # madmom: Cython extensions + the pretrained models that it loads from <package>/models/,
@@ -138,10 +138,10 @@ a = Analysis(  # noqa: F821
 )
 pyz = PYZ(a.pure)  # noqa: F821
 
-icon = ROOT / "partymix" / "gui" / "assets" / "partymix.ico"
+icon = ROOT / "partymix" / "gui" / "assets" / "icon.ico"
 icon_arg = [str(icon)] if icon.exists() else None
 if icon_arg is None:
-    print("[partymix.spec] no partymix/gui/assets/partymix.ico - using the default icon")
+    print("[partymix.spec] no partymix/gui/assets/icon.ico - using the default icon")
 
 common = dict(
     exclude_binaries=True,

@@ -134,19 +134,26 @@ jobs:
           $size = (Get-ChildItem dist/PartyMix -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
           Write-Output ("bundle size: {0:N0} MB" -f $size)
 
-      - name: Self-test frozen app (console exe, full pipeline)
+      - name: Bundle self-test (packaging/partymix_selftest.py, full pipeline)
         timeout-minutes: 30
         run: |
-          & dist/PartyMix/partymix-cli.exe --selftest --log "$env:RUNNER_TEMP/selftest-cli.log"
+          & dist/PartyMix/partymix-cli.exe --bundle-selftest --log "$env:RUNNER_TEMP/selftest-bundle.log"
           exit $LASTEXITCODE
 
-      - name: Self-test frozen app (windowed exe, quick)
-        timeout-minutes: 10
+      - name: App self-test (partymix --selftest, console exe)
+        timeout-minutes: 20
         run: |
-          $log = "$env:RUNNER_TEMP/selftest-gui.log"
-          $p = Start-Process -FilePath dist/PartyMix/PartyMix.exe -ArgumentList '--selftest', '--quick', '--log', "`"$log`"" -Wait -PassThru
-          if (Test-Path $log) { Get-Content $log }
-          Write-Output "PartyMix.exe exit code $($p.ExitCode)"
+          & dist/PartyMix/partymix-cli.exe --selftest *>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/selftest-cli.log"
+          Write-Output "partymix-cli.exe --selftest exit code $LASTEXITCODE"
+          exit $LASTEXITCODE
+
+      - name: App self-test (PartyMix.exe --selftest, windowed exe)
+        timeout-minutes: 20
+        run: |
+          $env:PARTYMIX_SELFTEST_LOG = "$env:RUNNER_TEMP/selftest-gui.log"
+          $p = Start-Process -FilePath dist/PartyMix/PartyMix.exe -ArgumentList '--selftest' -Wait -PassThru
+          if (Test-Path $env:PARTYMIX_SELFTEST_LOG) { Get-Content $env:PARTYMIX_SELFTEST_LOG }
+          Write-Output "PartyMix.exe --selftest exit code $($p.ExitCode)"
           exit $p.ExitCode
 
       - name: Portable zip
@@ -191,7 +198,7 @@ jobs:
           $instArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$dir`"", '/TASKS=desktopicon')
           $p = Start-Process -FilePath $setup -ArgumentList $instArgs -Wait -PassThru
           if ($p.ExitCode -ne 0) { Write-Output "::error::installer exit $($p.ExitCode)"; exit 1 }
-          & "$dir\partymix-cli.exe" --selftest --quick
+          & "$dir\partymix-cli.exe" --bundle-selftest --quick
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'PartyMix.lnk'
           if (-not (Test-Path $lnk)) { Write-Output "::error::start menu shortcut missing: $lnk"; exit 1 }

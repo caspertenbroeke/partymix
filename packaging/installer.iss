@@ -45,8 +45,8 @@ UsePreviousAppDir=yes
 InfoBeforeFile=installer_info_nl.txt
 OutputDir={#OutputDir}
 OutputBaseFilename=PartyMix-Setup-{#AppVersion}
-#if FileExists(AddBackslash(SourcePath) + "..\partymix\gui\assets\partymix.ico")
-SetupIconFile=..\partymix\gui\assets\partymix.ico
+#if FileExists(AddBackslash(SourcePath) + "..\partymix\gui\assets\icon.ico")
+SetupIconFile=..\partymix\gui\assets\icon.ico
 #endif
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}

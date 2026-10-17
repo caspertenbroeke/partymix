@@ -1,7 +1,7 @@
 """PartyMix self-test - proves that a (frozen) build is complete and works end to end.
 
-    PartyMix.exe --selftest [--quick] [--log FILE] [--keep DIR]
-    partymix-cli.exe --selftest ...          (same, with console output)
+    PartyMix.exe --bundle-selftest [--quick] [--log FILE] [--keep DIR]
+    partymix-cli.exe --bundle-selftest ...          (same, with console output)
     python packaging/partymix_selftest.py    (development checkout)
 
 Steps (each prints "OK"/"FOUT"; exit code 0 only if all pass):
@@ -194,7 +194,7 @@ def step_pipeline(work: Path) -> str:
 
 # ------------------------------------------------------------------ main
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="PartyMix --selftest")
+    ap = argparse.ArgumentParser(prog="PartyMix --bundle-selftest")
     ap.add_argument("--quick", action="store_true", help="skip the analysis/render pipeline")
     ap.add_argument("--log", help="also write the log to this file")
     ap.add_argument("--keep", help="work directory to keep (default: temp dir, removed afterwards)")
