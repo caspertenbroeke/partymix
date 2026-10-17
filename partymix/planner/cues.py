@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from ..model import MixPlan, PlannedTrack, TrackAnalysis, Transition
-from .common import (MAX_STRETCH, bass_levels, camelot_distance, layout, max_stretch, mean,
+from .common import (MAX_STRETCH, bass_levels, cut_tempos, camelot_distance, layout, max_stretch, mean,
                      n_bars_of, rms_levels, round_half, stretch_feasible, tempo_gap,
                      transition_tempo, vocal_levels)
 
@@ -286,7 +286,14 @@ def plan_mix_with_report(analyses_in_order: Sequence[TrackAnalysis], target_minu
 
     # ---- tempo plan (depends only on the order)
     cut = [_is_cut(A[i], A[i + 1]) for i in range(n - 1)]
-    T = [transition_tempo(A[i].bpm, A[i + 1].bpm) for i in range(n - 1)]
+    T, T_in = [], []
+    for i in range(n - 1):
+        if cut[i]:
+            t, ti = cut_tempos(A[i].bpm, A[i + 1].bpm)
+        else:
+            t, ti = transition_tempo(A[i].bpm, A[i + 1].bpm), None
+        T.append(t)
+        T_in.append(ti)
     start_tempo = round_half(A[0].bpm) if abs(round_half(A[0].bpm) / A[0].bpm - 1) < 0.004 else round(A[0].bpm, 2)
     if n > 1:
         end_tempo = round_half((T[-1] + A[-1].bpm) / 2)
@@ -294,7 +301,7 @@ def plan_mix_with_report(analyses_in_order: Sequence[TrackAnalysis], target_minu
             end_tempo = round(A[-1].bpm, 2)
     else:
         end_tempo = start_tempo
-    t_in = [start_tempo] + T
+    t_in = [start_tempo] + [ti if ti is not None else t for t, ti in zip(T, T_in)]
     t_out = T + [end_tempo]
     tempo_i = [(t_in[i] + t_out[i]) / 2 for i in range(n)]
 
@@ -411,6 +418,9 @@ def plan_mix_with_report(analyses_in_order: Sequence[TrackAnalysis], target_minu
             k = opts[i + 1][cj[i + 1]]
             e = tracks[i].end_bar
             name, o, why = choose_preset(P[i], P[i + 1], e, k, A[i].bpm, A[i + 1].bpm, cut[i])
+            if T_in[i] is not None:
+                o = dict(o, tempo_in=float(T_in[i]))
+                why += f" (tempo springt van {T[i]:.1f} naar {T_in[i]:.1f} BPM)".replace(".", ",")
             trans.append(Transition(overlap_bars=k.ov, tempo=T[i], preset=name, options=o))
             sbar = None if k.ov == 0 else k.s + int(round(o.get("swap", 0.5) * k.ov))
             notes.append(TransitionNote(i, (e - k.ov, e), (k.s, k.s + k.ov), sbar, why))
@@ -422,7 +432,15 @@ def plan_mix_with_report(analyses_in_order: Sequence[TrackAnalysis], target_minu
                 elif opts[i + 1][cj[i + 1]].ov > 0 and not opts[i + 1][cj[i + 1]].bass_in_intro:
                     trans[i].preset = "swap_hp"
                     trans[i].options.setdefault("lpin", True)
-        plan = MixPlan(tracks=tracks, transitions=trans, start_tempo=float(start_tempo),
+        texts = []
+        for nt in notes:
+            a_, b_ = A[nt.index].title, A[nt.index + 1].title
+            if nt.swap_bar is None:
+                texts.append(f"{a_} → {b_}: {why_of(nt)}; uit op maat {nt.out_window[1]}, in op maat {nt.in_window[0]}")
+            else:
+                texts.append(f"{a_} → {b_}: {why_of(nt)}; uit maat {nt.out_window[0]}–{nt.out_window[1]}, "
+                             f"in maat {nt.in_window[0]}–{nt.in_window[1]}, wissel op maat {nt.swap_bar}")
+        plan = MixPlan(tracks=tracks, transitions=trans, start_tempo=float(start_tempo), notes=texts,
                        end_tempo=float(end_tempo), end_fade_bars=END_FADE, target_minutes=float(target_minutes))
         return plan, notes
 
@@ -518,6 +536,10 @@ def plan_mix_with_report(analyses_in_order: Sequence[TrackAnalysis], target_minu
             warnings.append("Doelduur te kort voor deze nummers: elk nummer speelt minstens ~45 s")
     report = PlanReport(target, achieved, reachable, st, notes, warnings)
     return plan, report
+
+
+def why_of(nt: "TransitionNote") -> str:
+    return nt.reason
 
 
 def ovi_of(j: InOpt) -> int:

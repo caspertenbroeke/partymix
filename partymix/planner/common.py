@@ -178,7 +178,7 @@ class Layout:
 
 
 def anchors(segs: Sequence[Tuple[int, int]], ovs: Sequence[int], tempos: Sequence[float],
-            start_tempo: float, end_tempo: float) -> Tuple[List[int], int, np.ndarray, np.ndarray]:
+            start_tempo: float, end_tempo: float, tempos_in: Optional[Sequence[Optional[float]]] = None) -> Tuple[List[int], int, np.ndarray, np.ndarray]:
     n = len(segs)
     O = [0]
     for i in range(n - 1):
@@ -186,15 +186,20 @@ def anchors(segs: Sequence[Tuple[int, int]], ovs: Sequence[int], tempos: Sequenc
     total = O[-1] + segs[-1][1] - segs[-1][0]
     an = [(0, start_tempo)]
     for i in range(n - 1):
-        an += [(O[i + 1], tempos[i]), (O[i + 1] + ovs[i], tempos[i])]
+        tin = tempos_in[i] if tempos_in is not None else None
+        if ovs[i] == 0 and tin is not None and abs(tin - tempos[i]) > 1e-9:
+            # tempo jump exactly at the cut bar: A arrives at `tempo`, B continues from `tempo_in`
+            an += [(O[i + 1] - 1e-6, tempos[i]), (O[i + 1], tin)]
+        else:
+            an += [(O[i + 1], tempos[i]), (O[i + 1] + ovs[i], tempos[i])]
     an.append((total + 8, end_tempo))
     ax = np.array([a for a, _ in an], float)
     ay = np.array([t for _, t in an], float)
     return O, total, ax, ay
 
 
-def layout_from(segs, ovs, tempos, start_tempo, end_tempo) -> Layout:
-    O, total, ax, ay = anchors(segs, ovs, tempos, start_tempo, end_tempo)
+def layout_from(segs, ovs, tempos, start_tempo, end_tempo, tempos_in=None) -> Layout:
+    O, total, ax, ay = anchors(segs, ovs, tempos, start_tempo, end_tempo, tempos_in)
     nb = max((total + 8) * 4, 1)
     beat_tempo = np.interp((np.arange(nb) + 0.5) / 4, ax, ay)
     beat_dur = 60.0 / beat_tempo
@@ -207,7 +212,26 @@ def layout(plan: MixPlan) -> Layout:
     segs = [(t.start_bar, t.end_bar) for t in plan.tracks]
     ovs = [tr.overlap_bars for tr in plan.transitions]
     tempos = [tr.tempo for tr in plan.transitions]
-    return layout_from(segs, ovs, tempos, plan.start_tempo, plan.end_tempo)
+    return layout_from(segs, ovs, tempos, plan.start_tempo, plan.end_tempo,
+                       [tempo_in_of(tr) for tr in plan.transitions])
+
+
+def tempo_in_of(tr) -> Optional[float]:
+    """Tempo of the incoming track right after the transition (options["tempo_in"] for cuts)."""
+    v = tr.options.get("tempo_in") if tr.overlap_bars == 0 else None
+    return float(v) if v is not None else None
+
+
+def cut_tempos(a: float, b: float, limit: float = MAX_STRETCH) -> Tuple[float, Optional[float]]:
+    """(tempo, tempo_in) for an echo cut: one held tempo when both sides stay within `limit`,
+    else A ends at the tempo nearest to B within its limit and B starts likewise (a jump at the cut)."""
+    if stretch_feasible(a, b, limit):
+        return transition_tempo(a, b, limit), None
+    def toward(x, y):
+        t = min(max(round_half(y), x * (1 - limit)), x * (1 + limit))
+        r = round_half(t)
+        return r if abs(r / x - 1) <= limit else round(t, 2)
+    return toward(a, b), toward(b, a)
 
 
 def mix_duration(plan: MixPlan) -> float:
@@ -218,7 +242,11 @@ def mix_duration(plan: MixPlan) -> float:
 def track_tempo_range(plan: MixPlan, i: int) -> Tuple[float, float]:
     """(min, max) output tempo while track i plays (tempo curve is piecewise linear, so the
     extremes are at the anchors bounding the track)."""
-    tin = plan.start_tempo if i == 0 else plan.transitions[i - 1].tempo
+    if i == 0:
+        tin = plan.start_tempo
+    else:
+        prev = plan.transitions[i - 1]
+        tin = tempo_in_of(prev) or prev.tempo
     tout = plan.end_tempo if i == len(plan.tracks) - 1 else plan.transitions[i].tempo
     return min(tin, tout), max(tin, tout)
 

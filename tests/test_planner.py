@@ -79,13 +79,13 @@ def check_plan(plan: MixPlan, A, require_phrase_frac=0.6):
             assert tr.preset == "echo_cut"
     lay = layout(plan)
     assert all(x < y for x, y in zip(lay.offsets, lay.offsets[1:])), "layout must be monotonic"
-    # stretch ≤ 3 % unless the pair is an echo cut that cannot be stretched
-    st = max_stretch(plan, A)
-    for i, s in enumerate(st):
-        cut_near = (i > 0 and plan.transitions[i - 1].preset == "echo_cut") or \
-                   (i < n - 1 and plan.transitions[i].preset == "echo_cut")
-        if not cut_near:
-            assert s <= MAX_STRETCH + 1e-9, (A[i].title, s)
+    # stretch ≤ 3 % everywhere (big jumps use echo_cut + tempo_in)
+    for i, s in enumerate(max_stretch(plan, A)):
+        assert s <= MAX_STRETCH + 1e-9, (A[i].title, s)
+    for tr in plan.transitions:
+        if "tempo_in" in tr.options:
+            assert tr.overlap_bars == 0 and tr.preset == "echo_cut"
+    assert len(plan.notes) == n - 1 and all(isinstance(x, str) and "→" in x for x in plan.notes)
 
 
 # --------------------------------------------------------------------------------------------
@@ -181,8 +181,26 @@ def _synthetic(title, bpm, key, n=96, intro=16, outro=16, phrase=0, vocals=True,
 def test_big_tempo_jump_is_echo_cut():
     A = [_synthetic("a", 120, "8A"), _synthetic("b", 132, "8A")]
     plan, rep = plan_mix_with_report(A, 6)
-    assert plan.transitions[0].preset == "echo_cut" and plan.transitions[0].overlap_bars == 0
+    tr = plan.transitions[0]
+    assert tr.preset == "echo_cut" and tr.overlap_bars == 0
     assert any("Tempoverschil" in w for w in rep.warnings)
+    # tempo jumps at the cut: A ends at tempo (≤3 % from 120), B starts at tempo_in (≤3 % from 132)
+    assert abs(tr.tempo / 120 - 1) <= MAX_STRETCH + 1e-9
+    assert abs(tr.options["tempo_in"] / 132 - 1) <= MAX_STRETCH + 1e-9
+    assert all(s <= MAX_STRETCH + 1e-9 for s in max_stretch(plan, A))
+    check_plan(plan, A)
+    lay = layout(plan)
+    cut_bar = lay.offsets[1]
+    assert 60 / lay.beat_dur[cut_bar * 4 - 1] == pytest.approx(tr.tempo, abs=0.05)
+    assert 60 / lay.beat_dur[cut_bar * 4] == pytest.approx(tr.options["tempo_in"], abs=0.05)
+    assert "tempo springt" in plan.notes[0]
+
+
+def test_layout_without_tempo_in_unchanged():
+    # a cut without tempo_in keeps the engine.py behaviour (one held tempo)
+    hp = hand_plan()
+    assert "tempo_in" not in hp.transitions[11].options
+    assert mix_duration(hp) == pytest.approx(engine_total_sec(reference_plan()), abs=1e-6)
 
 
 def test_synthetic_intro_rules():
