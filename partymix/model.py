@@ -69,7 +69,9 @@ class Transition:
     preset: str                     # xfade | swap | swap_hp | editor | echo_out | echo_cut | double
     options: Dict[str, Any] = field(default_factory=dict)
     # options: swap (0..1 fraction where bass+vocals hand over), fadein (0..1), lpin (bool),
-    #          lpdur (0..1), voc (bool, vocal hand-over on – default True)
+    #          lpdur (0..1), voc (bool, vocal hand-over on – default True),
+    #          tempo_in (float, only for overlap 0 / echo_cut: tempo of the incoming track right
+    #          after the cut; the layout jumps from `tempo` to `tempo_in` at the cut)
 
 
 @dataclass
@@ -87,6 +89,7 @@ class MixPlan:
     end_tempo: float
     end_fade_bars: int = 8
     target_minutes: float = 30.0
+    notes: List[str] = field(default_factory=list)   # Dutch explanation per transition (GUI)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=1)
