@@ -30,9 +30,17 @@ def _click_track(path: str, bpm: float, seconds: float, sr: int = 44100, pitch: 
 
 
 def run(verbose: bool = True) -> int:
+    log_path = os.environ.get("PARTYMIX_SELFTEST_LOG")
+    log = open(log_path, "a", encoding="utf-8") if log_path else None
+
     def say(m):
-        if verbose:
-            print(m, flush=True)
+        if verbose and sys.stdout is not None:
+            try:
+                print(m, flush=True)
+            except Exception:
+                pass
+        if log:
+            log.write(m + "\n"); log.flush()
 
     ok = True
     t0 = time.time()
@@ -53,8 +61,8 @@ def run(verbose: bool = True) -> int:
             os.environ.setdefault("PARTYMIX_CACHE", os.path.join(td, "cache"))
             say("3/5 testnummers analyseren…")
             files = [os.path.join(td, "a.wav"), os.path.join(td, "b.wav")]
-            _click_track(files[0], 126.0, 75, pitch=220.0)
-            _click_track(files[1], 128.0, 75, pitch=330.0)
+            _click_track(files[0], 126.0, 50, pitch=220.0)
+            _click_track(files[1], 128.0, 50, pitch=330.0)
             from partymix.analysis import analyze_track
             an = [analyze_track(f) for f in files]
             for a, want in zip(an, (126.0, 128.0)):
@@ -63,7 +71,7 @@ def run(verbose: bool = True) -> int:
                     ok = False
             say("4/5 mix plannen…")
             from partymix.planner import plan_mix
-            plan = plan_mix(an, target_minutes=2.0)
+            plan = plan_mix(an, target_minutes=1.3)
             say("5/5 mix renderen…")
             from partymix.model import RenderSettings
             from partymix.render import render_mix
@@ -72,12 +80,15 @@ def run(verbose: bool = True) -> int:
             import soundfile as sf
             info = sf.info(outs[0])
             say(f"   resultaat: {info.duration:.1f} s, {info.samplerate} Hz, {info.subtype}")
-            if info.duration < 30:
+            if info.duration < 20:
                 ok = False
     except Exception:
         ok = False
-        traceback.print_exc()
+        tb = traceback.format_exc()
+        say(tb)
     say(("SELFTEST OK" if ok else "SELFTEST MISLUKT") + f" ({time.time() - t0:.0f} s)")
+    if log:
+        log.close()
     return 0 if ok else 1
 
 

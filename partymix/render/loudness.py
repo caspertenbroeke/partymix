@@ -125,8 +125,17 @@ class LoudnessMeter:
         if self.total < 0.4 * self.rate:
             raise ValueError("Audio moet langer zijn dan 0,4 s voor een loudness-meting")
         lo, hi = _block_bounds(self.total, self.rate)
-        z = np.array([(self.cum[h] - self.cum[l]) / (0.4 * self.rate) for l, h in zip(lo, hi)]).T
+        z = np.array([(self._cum_at(h) - self._cum_at(l)) / (0.4 * self.rate) for l, h in zip(lo, hi)]).T
         return _gate(z)
+
+    def _cum_at(self, idx: int) -> np.ndarray:
+        # block upper bounds are clipped to the signal length (not a 100 ms boundary)
+        if idx >= self.total:
+            return self.acc
+        c = self.cum.get(int(idx))
+        if c is None:
+            raise RuntimeError(f"loudness: blokgrens {idx} ontbreekt (intern)")
+        return c
 
 
 def loudness_of_loud_part(x: np.ndarray, rate: int, block_sec: float = 3.0) -> float:

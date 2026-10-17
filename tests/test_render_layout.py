@@ -253,3 +253,17 @@ def test_master_hits_target_lufs(tmp_path):
     assert abs(integrated_loudness(y, sr) + 8.0) <= 0.3
     assert true_peak_db(y) <= -0.99
     assert rep.max_gain_reduction_db > 3
+
+
+@pytest.mark.parametrize("n", [17641, 44100 * 2 + 1, 4475965, 44100 * 61 + 12345, 20000 * 7 + 3])
+@pytest.mark.parametrize("chunk", [441000, 9999, 1])
+def test_streaming_loudness_any_length(n, chunk):
+    from partymix.render.loudness import integrated_loudness, LoudnessMeter
+    if chunk == 1 and n > 50000:
+        chunk = 4410 * 3 + 7
+    rng = np.random.default_rng(n % 1000)
+    x = (rng.standard_normal((n, 2)) * 0.1).astype(np.float32)
+    m = LoudnessMeter(44100)
+    for s in range(0, n, chunk):
+        m.feed(x[s:s + chunk])
+    assert m.result() == pytest.approx(integrated_loudness(x.astype(np.float64), 44100), abs=1e-6)
