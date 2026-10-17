@@ -213,6 +213,17 @@ def _resolve(ref: str) -> Callable:
     return getattr(importlib.import_module(mod_name), fn_name)
 
 
+def _job_label(ref: str) -> str:
+    """Dutch name of a job for error messages ("analyze" / "partymix.worker:_job_analyze" → "Analyse")."""
+    name = ref.split(":")[-1].lstrip("_")
+    name = name[4:] if name.startswith("job_") else name
+    for key, label in (("analy", "Analyse"), ("mix", "Mix maken"), ("plan", "Planning"),
+                       ("order", "Volgorde bepalen"), ("model", "Download")):
+        if name.startswith(key):
+            return label
+    return "Taak"
+
+
 # --------------------------------------------------------------------------------------------
 # child process main
 
@@ -256,8 +267,7 @@ def _child_main(worker_id: int, task_q, event_q, cancel_ev) -> None:  # pragma: 
             if token.is_set():
                 event_q.put(("cancelled", job_id))
             else:
-                what = {"analyze": "Analyse", "mix": "Mix maken", "plan": "Planning",
-                        "order": "Volgorde bepalen", "model": "Download"}.get(ref, "Taak")
+                what = _job_label(ref)
                 try:
                     event_q.put(("error", job_id, dutch_error(exc, what), traceback.format_exc()))
                 except Exception:  # unpicklable exception text, should not happen
