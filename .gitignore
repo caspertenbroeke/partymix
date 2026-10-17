@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.wav
+*.flac
+*.mp3
+*.onnx
+build/
+dist/
+.venv/
+/test_out/
