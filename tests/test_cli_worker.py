@@ -39,6 +39,15 @@ def job_stubborn(x, progress=None, cancel=None):
     return x
 
 
+def job_analyze_fake(path, progress=None, cancel=None):
+    """Stand-in for analysis.analyze_track used by tests/test_gui_backend.py."""
+    if "crash" in path:
+        os._exit(7)
+    progress(0.5, "Beats zoeken")
+    from partymix.gui.demo import analysis_for_path
+    return analysis_for_path(path)
+
+
 # ---- tests ----------------------------------------------------------------------------------
 def test_parse_progress_shapes():
     assert parse_progress((0.5,), {}) == (0.5, "")

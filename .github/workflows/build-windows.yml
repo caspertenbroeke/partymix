@@ -93,7 +93,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true  # fail on any non-zero exit
           $whl = (Get-ChildItem wheelhouse -Filter 'madmom-*.whl' | Select-Object -First 1).FullName
           python -m pip install --no-deps "$whl"
-          python -c "import madmom, madmom.models as m; assert m.DOWNBEATS_BLSTM and m.KEY_CNN, 'madmom models missing (submodule not fetched?)'; print('madmom', madmom.__version__, len(m.DOWNBEATS_BLSTM), 'downbeat models')"
+          python -c "import madmom.models as m; assert m.DOWNBEATS_BLSTM and m.KEY_CNN, 'madmom models missing'"
 
       - name: Run tests
         env:
@@ -162,13 +162,24 @@ jobs:
       - name: Build installer (Inno Setup)
         run: |
           $PSNativeCommandUseErrorActionPreference = $true  # fail on any non-zero exit
-          $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
-          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
-          if (-not (Test-Path $iscc)) {
-            choco install innosetup -y --no-progress
-            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          function Find-Iscc {
+            $c = Get-Command iscc.exe -ErrorAction SilentlyContinue
+            if ($c) { return $c.Source }
+            $hit = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe", "$env:ProgramFiles\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            if ($hit) { return $hit.FullName }
           }
-          & $iscc /Qp "/DAppVersion=${{ steps.version.outputs.version }}" "/DAppVersionNumeric=${{ steps.version.outputs.numeric }}" "/DBuildDir=$PWD\dist\PartyMix" "/DOutputDir=$PWD\dist" packaging\installer.iss
+          $iscc = Find-Iscc
+          if (-not $iscc) { choco install innosetup -y --no-progress; $iscc = Find-Iscc }
+          if (-not $iscc) { Write-Output "::error::Inno Setup (ISCC.exe) not found"; exit 1 }
+          Write-Output "Using $iscc"
+          $defs = @(
+            "/DAppVersion=${{ steps.version.outputs.version }}",
+            "/DAppVersionNumeric=${{ steps.version.outputs.numeric }}",
+            "/DBuildDir=$PWD\dist\PartyMix",
+            "/DOutputDir=$PWD\dist"
+          )
+          & $iscc /Qp @defs packaging\installer.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-ChildItem dist -Filter 'PartyMix-Setup-*.exe' | Format-Table Length, Name
 
@@ -177,7 +188,8 @@ jobs:
         run: |
           $setup = (Get-ChildItem dist -Filter 'PartyMix-Setup-*.exe' | Select-Object -First 1).FullName
           $dir = "$env:RUNNER_TEMP\PartyMixInstall"
-          $p = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$dir`"", '/TASKS=desktopicon' -Wait -PassThru
+          $instArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$dir`"", '/TASKS=desktopicon')
+          $p = Start-Process -FilePath $setup -ArgumentList $instArgs -Wait -PassThru
           if ($p.ExitCode -ne 0) { Write-Output "::error::installer exit $($p.ExitCode)"; exit 1 }
           & "$dir\partymix-cli.exe" --selftest --quick
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

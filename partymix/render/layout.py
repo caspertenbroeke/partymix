@@ -5,7 +5,8 @@ Pure functions, same math as ``reference/engine.py``:
 * track ``i`` starts at output bar ``offsets[i]``; the next track starts ``overlap`` bars
   before track ``i`` ends;
 * tempo anchors: ``(0, start_tempo)``, for every transition ``(O[i+1], tempo)`` and
-  ``(O[i+1] + overlap, tempo)`` (tempo held during the overlap), and
+  ``(O[i+1] + overlap, tempo)`` (tempo held during the overlap; for an overlap-0 cut with
+  ``options["tempo_in"]`` the second anchor uses ``tempo_in``, i.e. the curve jumps), and
   ``(total_bars + 8, end_tempo)``; per-beat tempo is linearly interpolated at beat centres;
 * ``T(x)`` = output seconds of fractional output bar ``x`` (cumulative beat durations).
 
@@ -92,7 +93,11 @@ def compute_layout(plan: MixPlan, analyses: Optional[Sequence[TrackAnalysis]] = 
     total_bars = O[-1] + lengths[-1]
     anch = [(0.0, float(plan.start_tempo))]
     for i in range(n - 1):
-        anch += [(O[i + 1], float(trs[i].tempo)), (O[i + 1] + overlaps[i], float(trs[i].tempo))]
+        t_out = float(trs[i].tempo)
+        t_in = t_out
+        if overlaps[i] == 0 and (trs[i].options or {}).get("tempo_in") is not None:
+            t_in = float(trs[i].options["tempo_in"])   # tempo jumps at the cut point
+        anch += [(O[i + 1], t_out), (O[i + 1] + overlaps[i], t_in)]
     anch.append((total_bars + END_EXTRA_BARS, float(plan.end_tempo)))
     ax = np.array([a for a, _ in anch], float)
     ay = np.array([t for _, t in anch], float)

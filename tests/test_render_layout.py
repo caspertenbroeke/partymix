@@ -218,3 +218,17 @@ def test_cue_and_tracklist(tmp_path):
     assert 'FILE "m.flac" WAVE' in txt and "INDEX 01 01:15:39" in txt and "Één" in txt
     t = open(write_tracklist(str(tmp_path / "m.txt"), cues, 100.0), encoding="utf-8").read()
     assert "01:15" in t and "A - Één" in t
+
+
+def test_tempo_in_jump_at_cut():
+    p = _plan(tempos=(126.0, 128.0), ovs=(16, 0), start=126.0, end=138.0)
+    p.transitions[1].preset = "echo_cut"
+    base = compute_layout(p)
+    p.transitions[1].options = {"tempo_in": 138.0}
+    lay = compute_layout(p)
+    cut = lay.offsets[2]
+    assert lay.tempo_at(cut - 0.1) == pytest.approx(128.0, abs=0.05)
+    assert lay.tempo_at(cut + 0.01) == pytest.approx(138.0, abs=0.01)
+    assert lay.tempo_at(cut + 20) == pytest.approx(138.0, abs=0.01)
+    np.testing.assert_allclose(lay.T(np.arange(cut + 1)), base.T(np.arange(cut + 1)))
+    assert estimate_duration(p) < estimate_duration(_plan(tempos=(126.0, 128.0), ovs=(16, 0), start=126.0, end=138.0))

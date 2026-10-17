@@ -75,9 +75,10 @@ def normalise_score(score: Any) -> float:
 class ProcessBackend(Backend):
     """Runs analysis in ``workers`` processes and order/plan/mix/model jobs in one extra process."""
 
-    def __init__(self, workers: Optional[int] = None, parent=None):
+    def __init__(self, workers: Optional[int] = None, parent=None, job_refs: Optional[Dict[str, str]] = None):
         super().__init__(parent)
-        from partymix.worker import WorkerPool
+        from partymix.worker import BUILTIN_JOBS, WorkerPool
+        self._refs = dict(BUILTIN_JOBS, **(job_refs or {}))
         self._analysis = WorkerPool(workers, name="analyse")
         self._tasks = WorkerPool(1, kill_timeout=8.0, name="taak")
         self._by_key: Dict[str, int] = {}
@@ -99,13 +100,13 @@ class ProcessBackend(Backend):
 
     def download_model(self) -> None:
         self._analysis.pause(True)
-        self._tasks.submit("model", tag=("model",))
+        self._tasks.submit(self._refs["model"], tag=("model",))
 
     # --- analysis -----------------------------------------------------------------------------
     def analyze(self, key: str, path: str) -> None:
         if key in self._by_key:
             return
-        self._by_key[key] = self._analysis.submit("analyze", path, tag=("analyze", key))
+        self._by_key[key] = self._analysis.submit(self._refs["analyze"], path, tag=("analyze", key))
 
     def cancel_analysis(self, key: str) -> None:
         jid = self._by_key.pop(key, None)
@@ -114,13 +115,13 @@ class ProcessBackend(Backend):
 
     # --- order / plan / mix -------------------------------------------------------------------
     def order(self, analyses, pinned_first, pinned_last) -> None:
-        self._tasks.submit("order", list(analyses), pinned_first, pinned_last, tag=("order",))
+        self._tasks.submit(self._refs["order"], list(analyses), pinned_first, pinned_last, tag=("order",))
 
     def plan(self, request_id, analyses_in_order, target_minutes) -> None:
-        self._tasks.submit("plan", list(analyses_in_order), float(target_minutes), tag=("plan", request_id))
+        self._tasks.submit(self._refs["plan"], list(analyses_in_order), float(target_minutes), tag=("plan", request_id))
 
     def mix(self, analyses_in_order, target_minutes, settings, plan=None) -> None:
-        self._mix_job = self._tasks.submit("mix", list(analyses_in_order), float(target_minutes), settings,
+        self._mix_job = self._tasks.submit(self._refs["mix"], list(analyses_in_order), float(target_minutes), settings,
                                            plan, tag=("mix",))
 
     def cancel_mix(self) -> None:

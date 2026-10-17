@@ -113,6 +113,8 @@ class TrackModel(QAbstractTableModel):
                 return None
             if col == COL_STATUS and it.status == FAILED:
                 return it.error
+            if col == COL_STATUS and it.status == RUNNING:
+                return f"{it.step or 'Analyseren'} – {int(it.progress * 100)}%"
             if col in (COL_TITLE, COL_ARTIST):
                 return it.path
             if col == COL_KEY and a is not None and a.key:
