@@ -1,0 +1,12 @@
+﻿PartyMix maakt van je eigen nummers één doorlopende, beat-gematchte feestmix.
+
+Goed om te weten:
+- PartyMix wordt geïnstalleerd voor alleen jouw Windows-account; je hebt geen beheerdersrechten nodig.
+- Alles draait op je eigen computer. Er wordt niets geüpload.
+- PartyMix is gratis en open source (GPL-3.0).
+- De beat- en toonsoortherkenning gebruikt modellen van madmom (CC BY-NC-SA 4.0).
+  Daarom is PartyMix alleen bedoeld voor NIET-commercieel gebruik.
+- Je bent zelf verantwoordelijk voor de rechten op de muziek die je mixt en afspeelt.
+
+Meer info en de volledige licenties: zie THIRD_PARTY_NOTICES.md in de installatiemap
+of https://github.com/caspertenbroeke/partymix

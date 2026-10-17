@@ -1,0 +1,8 @@
+# Development / CI: tests and the Windows build.
+-r requirements.txt
+cython>=3.0
+setuptools>=68
+wheel
+pytest>=8
+pytest-qt>=4.4
+pyinstaller>=6.10

@@ -1,0 +1,6 @@
+# madmom from git (the PyPI release 0.16.1 does not build on Python >= 3.10 / numpy 2).
+# Pinned to a commit of CPJKU/madmom main; pip also fetches the madmom_models submodule
+# (the pretrained networks are part of the package data).
+# Needs numpy + cython already installed and a C compiler (MSVC on Windows), then:
+#   pip install --no-build-isolation -r requirements-madmom.txt
+madmom @ git+https://github.com/CPJKU/madmom.git@27f032e8947204902c675e5e341a3faf5dc86dae

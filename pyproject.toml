@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "partymix"
+dynamic = ["version"]
+description = "Maak van 10-30 nummers één doorlopende, beat-gematchte feestmix (Windows desktop app)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "Casper ten Broeke" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Multimedia :: Sound/Audio :: Mixers",
+    "Environment :: X11 Applications :: Qt",
+]
+# Keep in sync with requirements.txt / requirements-madmom.txt (those are what CI uses).
+dependencies = [
+    "numpy>=2.0,<3",
+    "scipy>=1.13",
+    "soundfile>=0.12.1",
+    "pyloudnorm>=0.1.1",
+    "onnxruntime>=1.20",
+    "mido>=1.3",
+    "PySide6-Essentials>=6.7",
+    "PySide6-Addons>=6.7",
+    "madmom @ git+https://github.com/CPJKU/madmom.git@27f032e8947204902c675e5e341a3faf5dc86dae",
+]
+
+[project.optional-dependencies]
+dev = ["cython>=3.0", "pytest>=8", "pytest-qt>=4.4", "pyinstaller>=6.10"]
+
+[project.urls]
+Homepage = "https://github.com/caspertenbroeke/partymix"
+Issues = "https://github.com/caspertenbroeke/partymix/issues"
+
+[project.gui-scripts]
+# partymix/__main__.py must expose main() (see README "Voor ontwikkelaars").
+partymix = "partymix.__main__:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "partymix.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["partymix*"]
+
+[tool.setuptools.package-data]
+partymix = ["gui/assets/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+qt_api = "pyside6"
+addopts = "-ra"
+markers = [
+    "slow: long-running test (full analysis/render)",
+    "needs_audio: needs local audio files; skips itself when they are absent",
+]

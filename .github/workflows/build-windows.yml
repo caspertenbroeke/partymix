@@ -1,0 +1,232 @@
+name: build-windows
+
+# Builds the PartyMix Windows app on every push/PR:
+#   tests -> PyInstaller onedir -> self-test of the frozen exe -> Inno Setup installer -> artifacts.
+# A tag v* (e.g. v0.1.0, must match partymix/__init__.py) also publishes a GitHub Release.
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  PYTHON_VERSION: "3.11"
+  # keep in sync with requirements-madmom.txt
+  MADMOM_SHA: 27f032e8947204902c675e5e341a3faf5dc86dae
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Determine version
+        id: version
+        run: |
+          $base = (Select-String -Path partymix/__init__.py -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $ver = $env:GITHUB_REF_NAME -replace '^v', ''
+            if (($ver -replace '-.*$', '') -ne ($base -replace '-.*$', '')) {
+              Write-Output "::error::Tag $env:GITHUB_REF_NAME does not match partymix/__init__.py __version__ = $base"
+              exit 1
+            }
+          } else {
+            $ver = "$base-dev.$env:GITHUB_RUN_NUMBER"
+          }
+          $parts = @(($base -replace '[^0-9.].*$', '').Split('.') | Where-Object { $_ -ne '' })
+          while ($parts.Count -lt 4) { $parts += '0' }
+          $numeric = ($parts[0..3] -join '.')
+          "version=$ver" >> $env:GITHUB_OUTPUT
+          "numeric=$numeric" >> $env:GITHUB_OUTPUT
+          Write-Output "PartyMix version $ver (file version $numeric)"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-madmom.txt
+
+      - name: Install dependencies
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true  # fail on any non-zero exit
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip list
+
+      # madmom is compiled from git (Cython + MSVC). Cache the built wheel per commit.
+      - name: Cache madmom wheel
+        id: madmom-cache
+        uses: actions/cache@v5
+        with:
+          path: wheelhouse
+          key: madmom-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ env.MADMOM_SHA }}-${{ hashFiles('requirements.txt', 'requirements-madmom.txt') }}
+
+      - name: Build madmom wheel
+        if: steps.madmom-cache.outputs.cache-hit != 'true'
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true  # fail on any non-zero exit
+          python -m pip wheel --no-build-isolation --no-deps -w wheelhouse -r requirements-madmom.txt
+          Get-ChildItem wheelhouse
+
+      - name: Install madmom and check its models
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true  # fail on any non-zero exit
+          $whl = (Get-ChildItem wheelhouse -Filter 'madmom-*.whl' | Select-Object -First 1).FullName
+          python -m pip install --no-deps "$whl"
+          python -c "import madmom, madmom.models as m; assert m.DOWNBEATS_BLSTM and m.KEY_CNN, 'madmom models missing (submodule not fetched?)'; print('madmom', madmom.__version__, len(m.DOWNBEATS_BLSTM), 'downbeat models')"
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m pytest -q
+          # exit code 5 = no tests collected (early in the project) - not a failure
+          if ($LASTEXITCODE -eq 5) { Write-Output "no tests collected"; exit 0 }
+          exit $LASTEXITCODE
+
+      - name: Cache tool downloads
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/partymix-dl
+          key: tools-${{ hashFiles('packaging/fetch_tools.py') }}
+
+      - name: Fetch ffmpeg, rubberband and the vocal model (sha256-verified)
+        env:
+          PARTYMIX_DL_CACHE: ${{ runner.temp }}/partymix-dl
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true  # fail on any non-zero exit
+          python packaging/fetch_tools.py
+          Get-ChildItem -Recurse packaging/bin, packaging/models | Format-Table Length, FullName
+
+      - name: PyInstaller build
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true  # fail on any non-zero exit
+          python -m PyInstaller packaging/partymix.spec --noconfirm --distpath dist --workpath build/pyinstaller
+          $need = @(
+            'dist/PartyMix/PartyMix.exe', 'dist/PartyMix/partymix-cli.exe',
+            'dist/PartyMix/_internal/bin/ffmpeg.exe', 'dist/PartyMix/_internal/bin/ffprobe.exe',
+            'dist/PartyMix/_internal/bin/rubberband.exe', 'dist/PartyMix/_internal/bin/sndfile.dll',
+            'dist/PartyMix/_internal/models/UVR-MDX-NET-Inst_HQ_3.onnx',
+            'dist/PartyMix/_internal/madmom/models/downbeats', 'dist/PartyMix/_internal/madmom/models/key'
+          )
+          $missing = $need | Where-Object { -not (Test-Path $_) }
+          if ($missing) { Write-Output "::error::missing in bundle: $($missing -join ', ')"; exit 1 }
+          $size = (Get-ChildItem dist/PartyMix -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
+          Write-Output ("bundle size: {0:N0} MB" -f $size)
+
+      - name: Self-test frozen app (console exe, full pipeline)
+        timeout-minutes: 30
+        run: |
+          & dist/PartyMix/partymix-cli.exe --selftest --log "$env:RUNNER_TEMP/selftest-cli.log"
+          exit $LASTEXITCODE
+
+      - name: Self-test frozen app (windowed exe, quick)
+        timeout-minutes: 10
+        run: |
+          $log = "$env:RUNNER_TEMP/selftest-gui.log"
+          $p = Start-Process -FilePath dist/PartyMix/PartyMix.exe -ArgumentList '--selftest', '--quick', '--log', "`"$log`"" -Wait -PassThru
+          if (Test-Path $log) { Get-Content $log }
+          Write-Output "PartyMix.exe exit code $($p.ExitCode)"
+          exit $p.ExitCode
+
+      - name: Portable zip
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true  # fail on any non-zero exit
+          $zip = "dist/PartyMix-${{ steps.version.outputs.version }}-portable-win64.zip"
+          Push-Location dist
+          7z a -tzip -mx=5 "../$zip" PartyMix | Out-Null
+          Pop-Location
+          if (-not (Test-Path $zip)) { exit 1 }
+          Get-Item $zip | Format-Table Length, Name
+
+      - name: Build installer (Inno Setup)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true  # fail on any non-zero exit
+          $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          & $iscc /Qp "/DAppVersion=${{ steps.version.outputs.version }}" "/DAppVersionNumeric=${{ steps.version.outputs.numeric }}" "/DBuildDir=$PWD\dist\PartyMix" "/DOutputDir=$PWD\dist" packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist -Filter 'PartyMix-Setup-*.exe' | Format-Table Length, Name
+
+      - name: Test installer (silent per-user install, self-test, uninstall)
+        timeout-minutes: 15
+        run: |
+          $setup = (Get-ChildItem dist -Filter 'PartyMix-Setup-*.exe' | Select-Object -First 1).FullName
+          $dir = "$env:RUNNER_TEMP\PartyMixInstall"
+          $p = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$dir`"", '/TASKS=desktopicon' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Output "::error::installer exit $($p.ExitCode)"; exit 1 }
+          & "$dir\partymix-cli.exe" --selftest --quick
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'PartyMix.lnk'
+          if (-not (Test-Path $lnk)) { Write-Output "::error::start menu shortcut missing: $lnk"; exit 1 }
+          # the uninstaller re-launches itself from %TEMP%, so poll instead of trusting -Wait
+          Start-Process -FilePath "$dir\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          for ($i = 0; $i -lt 60 -and (Test-Path "$dir\PartyMix.exe"); $i++) { Start-Sleep -Seconds 2 }
+          if (Test-Path "$dir\PartyMix.exe") { Write-Output "::error::uninstall left PartyMix.exe behind"; exit 1 }
+          Write-Output "install/uninstall OK"
+
+      - name: Upload installer + portable zip
+        uses: actions/upload-artifact@v6
+        with:
+          name: PartyMix-${{ steps.version.outputs.version }}-windows
+          path: |
+            dist/PartyMix-Setup-*.exe
+            dist/PartyMix-*-portable-win64.zip
+          compression-level: 0
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/') && 90 || 14 }}
+          if-no-files-found: error
+
+      - name: Upload self-test logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: selftest-logs
+          path: ${{ runner.temp }}/selftest-*.log
+          if-no-files-found: ignore
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: PartyMix-${{ needs.build.outputs.version }}-windows
+          path: release
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: PartyMix ${{ needs.build.outputs.version }}
+          files: |
+            release/PartyMix-Setup-*.exe
+            release/PartyMix-*-portable-win64.zip
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true

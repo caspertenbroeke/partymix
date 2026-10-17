@@ -1,0 +1,6 @@
+# downloaded by packaging/fetch_tools.py
+bin/
+models/
+licenses/
+# Inno Setup output
+Output/
