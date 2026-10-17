@@ -163,7 +163,7 @@ def test_render_flow_with_mocked_worker(make_window, qtbot, tmp_path):
     assert len(lines) == 14 and lines[0].strip().startswith("0:00")
     w.play_result()
     w.open_result_folder()
-    assert w.opened[0].endswith(".flac") and w.opened[1] == str(Path(s.out_path).parent)
+    assert w.opened[0].endswith(".flac") and Path(w.opened[1]) == Path(s.out_path).parent
     shot(w, "done")
     w.resize(1280, 720)                          # typical laptop: right column must stay usable
     shot(w, "done_small")

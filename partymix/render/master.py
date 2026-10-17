@@ -181,7 +181,7 @@ def _ffmetadata(path: str, cues: Sequence[CueEntry], total_sec: float, title: st
 
 def master_to_files(read_chunk: Callable[[int, int], np.ndarray], frames: int, sr: int, out_path: str,
                     formats: Sequence[str], workdir: str, cues: Sequence[CueEntry] = (),
-                    target_lufs: float = -9.5, true_peak_db_: float = -1.0, bit_depth: int = 24,
+                    target_lufs: float = -10.3, true_peak_db_: float = -1.0, bit_depth: int = 24,
                     title: str = "PartyMix", progress: Optional[Callable[[float, str], None]] = None,
                     cancel_event=None) -> MasterReport:
     """Master the float pre-mix (accessed via ``read_chunk(start, count) -> [count, 2]``) and
