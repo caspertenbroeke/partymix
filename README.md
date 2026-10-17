@@ -186,7 +186,7 @@ met de hand (*workflow_dispatch*):
    `packaging/licenses`;
 4. PyInstaller (onedir) met `packaging/partymix.spec`. Dat levert `dist/PartyMix/PartyMix.exe` (venster)
    en `partymix-cli.exe` (console) op;
-5. **zelftest** van de bevroren app (zie hieronder), daarna de portable zip, de Inno Setup-installer
+5. **zelftests** van de bevroren app (zie hieronder), daarna de portable zip, de Inno Setup-installer
    (`packaging/installer.iss` → `PartyMix-Setup-<versie>.exe`) en een test van de installer:
    stil installeren, zelftest, verwijderen;
 6. artifacts uploaden. Bij een tag `v*` volgt ook een **GitHub Release** met de installer en de zip.
@@ -195,16 +195,20 @@ met de hand (*workflow_dispatch*):
 tag `v0.2.0`. Komen tag en versie niet overeen, dan stopt de build. Een tag met `-` (bijv. `v0.2.0-rc1`)
 wordt als pre-release gepubliceerd.
 
-### Zelftest (`--selftest`)
+### Zelftests
+
+**`PartyMix.exe --selftest`** is de zelftest van de app zelf (in `partymix/cli.py`). Hij moet alle
+modules importeren, ffmpeg/rubberband/het model vinden, een korte gegenereerde click-track analyseren
+en een mini-mix van 2 nummers renderen. Bij succes is de exitcode 0. CI draait hem op `partymix-cli.exe`
+én op het venster-programma `PartyMix.exe` (log via `$PARTYMIX_SELFTEST_LOG`).
+
+**`--bundle-selftest`** is een extra, diepere controle van de bevroren bundel (`packaging/partymix_selftest.py`,
+afgevangen in `packaging/launcher.py`):
 
 ```
-PartyMix.exe --selftest [--quick] [--log BESTAND] [--keep MAP]
-partymix-cli.exe --selftest ...                  # zelfde, met console-uitvoer
+partymix-cli.exe --bundle-selftest [--quick] [--log BESTAND] [--keep MAP]
 python packaging/partymix_selftest.py ...        # vanuit de broncode
 ```
-
-De zelftest wordt in de launcher (`packaging/launcher.py`) afgevangen en draait
-`packaging/partymix_selftest.py`. Die doet het volgende:
 
 1. alle `partymix`-modules importeren, plus numpy/scipy/madmom/onnxruntime/soundfile/pyloudnorm/PySide6;
 2. ffmpeg, ffprobe en rubberband vinden via `partymix.paths` en uitvoeren (`-version`);
@@ -215,9 +219,7 @@ De zelftest wordt in de launcher (`packaging/launcher.py`) afgevangen en draait
    `partymix all a.wav b.wav -o mix.flac --minutes 2` draaien. Daarna wordt gecontroleerd of er een
    geldige mix van minstens 30 s is uitgekomen.
 
-Exitcode 0 betekent dat alle stappen geslaagd zijn. Het log gaat naar stdout, naar `--log` en naar
-`$PARTYMIX_SELFTEST_LOG`. De cache wordt naar een tijdelijke map omgeleid.
-De zelftest gebruikt alleen de publieke CLI (`partymix.cli.main`).
+Exitcode 0 betekent dat alle stappen geslaagd zijn. De cache wordt naar een tijdelijke map omgeleid.
 
 ### Een tool of model bijwerken
 

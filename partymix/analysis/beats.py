@@ -196,6 +196,18 @@ def fit_grid(raw: np.ndarray, duration: float) -> BeatResult:
         A = np.polyfit(idx[m], b[m], 1)
         res = b - np.polyval(A, idx)
         m = np.abs(res) < INLIER_TOL
+    # Refinement (not in grid2.py): a short stretch where madmom drifts to another tempo makes
+    # round(diff/per0) slip the local index, turning every later beat into an outlier.
+    # Re-index all beats against the fitted grid and refit until stable.
+    for _ in range(3):
+        idx2 = np.round((b - A[1]) / A[0])
+        m2 = np.abs(b - np.polyval(A, idx2)) < INLIER_TOL
+        if m2.sum() <= m.sum() or m2.sum() < 2:
+            break
+        idx, m = idx2, m2
+        A = np.polyfit(idx[m], b[m], 1)
+        res = b - np.polyval(A, idx)
+        m = np.abs(res) < INLIER_TOL
     per, b0 = float(A[0]), float(A[1])
     res = b - np.polyval(A, idx)
     inl = float(m.mean())
