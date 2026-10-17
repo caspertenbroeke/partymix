@@ -25,7 +25,6 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
-import numpy as np
 
 from .. import paths
 from ..audio_io import SR, choose_gain, decode, read_audio, read_title_artist, write_flac

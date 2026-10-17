@@ -1,7 +1,6 @@
 """Unit tests for the analysis package (synthetic audio, no real music needed)."""
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 

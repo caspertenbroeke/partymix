@@ -19,7 +19,7 @@ Pipeline (identical to the hand-made ``reference/grid2.py`` / ``reference/bars.p
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional
 
 import numpy as np
 
