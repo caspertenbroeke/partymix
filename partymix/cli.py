@@ -442,6 +442,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["--selftest"]:
+        from partymix.selftest import run as selftest_run
+        return selftest_run()
     if not argv or argv == ["--demo"]:
         from partymix.gui import main as gui_main
         return gui_main(demo=bool(argv))
