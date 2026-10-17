@@ -137,7 +137,7 @@ def step_qt() -> str:
     return f"platform {app.platformName()}"
 
 
-def synth_track(path: Path, bpm: float, bars: int = 40, root_hz: float = 55.0, seed: int = 0, sr: int = 44100) -> None:
+def synth_track(path: Path, bpm: float, bars: int = 32, root_hz: float = 55.0, seed: int = 0, sr: int = 44100) -> None:
     """A simple 4/4 house loop: kick every beat, clap on 2+4, off-beat hats, bass from bar 8, pad."""
     import numpy as np
     import soundfile as sf

@@ -204,11 +204,66 @@ def master_to_files(read_chunk: Callable[[int, int], np.ndarray], frames: int, s
     gain_db = float(target_lufs - lin) if np.isfinite(lin) else 0.0
     gain = 10 ** (gain_db / 20)
 
-    # 2. limiter -> float32 temp file.  Limiting lowers loudness, so iterate (max LIMIT_PASSES):
-    #    measure output LUFS + true peak, correct the pre-gain (secant step) and the ceiling.
+    # 2. limiter.  Limiting lowers loudness, so the pre-gain is searched first on a sample
+    #    of the mix (every 4th 10-s chunk, fresh limiter warmed up with 1 s of context), then
+    #    the full pass runs; if it misses target +-LUFS_TOL / the true-peak ceiling, the gain
+    #    is corrected and the full pass repeated (max LIMIT_PASSES full passes).
     lim_path = os.path.join(workdir, "limited.f32")
     ceiling = true_peak_db_ - 0.05
-    hist = []                       # (pre-gain dB, output LUFS)
+    n_chunks = (frames + chunk - 1) // chunk
+    sample_idx = list(range(1, n_chunks, 4)) if n_chunks >= 8 else list(range(n_chunks))
+
+    def ext_read(s0: int, n: int, pre: int, post_: int) -> np.ndarray:
+        a, z = s0 - pre, s0 + n + post_
+        x = read_chunk(max(a, 0), z - max(a, 0)).astype(np.float64)
+        if a < 0:
+            x = np.concatenate([np.zeros((-a, 2)), x])
+        if len(x) < z - a:
+            x = np.concatenate([x, np.zeros((z - a - len(x), 2))])
+        return x
+
+    P0 = TruePeakLimiter(sr, ceiling).P
+    sample_cache = []                 # (n, extended block): 1 s warm-up + chunk, P context each side
+    for k in sample_idx:
+        s0 = k * chunk
+        n = min(chunk, frames - s0)
+        w = min(sr, s0)
+        sample_cache.append((w, n, ext_read(s0 - w, n + w, P0, P0)))
+
+    def sample_lufs(g_db: float, ceil: float) -> float:
+        m = LoudnessMeter(sr, 2)
+        g = 10 ** (g_db / 20)
+        for w, n, x in sample_cache:
+            y = TruePeakLimiter(sr, ceil).process(x * g, n + w)
+            m.feed(y[w:])
+        return m.result()
+
+    def secant(hist, target, g0):
+        if len(hist) < 2 or abs(hist[-1][0] - hist[-2][0]) < 0.02:
+            slope = 0.6
+        else:
+            slope = float(np.clip((hist[-1][1] - hist[-2][1]) / (hist[-1][0] - hist[-2][0]), 0.15, 1.0))
+        return g0 + float(np.clip((target - hist[-1][1]) / slope, -6.0, 6.0))
+
+    # 2a. cheap search on the sample (it under-/over-estimates slightly; corrected in 2b)
+    sh = []
+    g_try = gain_db
+    for it in range(8):
+        check_cancel(cancel_event)
+        lu = sample_lufs(g_try, ceiling)
+        if not np.isfinite(lu):
+            break
+        sh.append((g_try, lu))
+        prog(0.25 + 0.1 * (it + 1) / 8, "Luidheid afstemmen")
+        if abs(target_lufs - lu) <= 0.05:
+            break
+        g_try = secant(sh, target_lufs, g_try)
+    if sh:
+        gain_db = min(sh, key=lambda h: abs(h[1] - target_lufs))[0]
+    del sample_cache
+
+    # 2b. full passes
+    hist = []
     for attempt in range(LIMIT_PASSES):
         gain = 10 ** (gain_db / 20)
         lim = TruePeakLimiter(sr, ceiling)
@@ -217,15 +272,10 @@ def master_to_files(read_chunk: Callable[[int, int], np.ndarray], frames: int, s
         out_meter = LoudnessMeter(sr, 2)
         prev_tail = None
         with open(lim_path, "wb") as fo:
-            for s in range(0, frames, chunk):
+            for s0 in range(0, frames, chunk):
                 check_cancel(cancel_event)
-                n = min(chunk, frames - s)
-                a, z = s - P, s + n + P
-                x = read_chunk(max(a, 0), z - max(a, 0)).astype(np.float64)
-                if a < 0:
-                    x = np.concatenate([np.zeros((-a, 2)), x])
-                if len(x) < z - a:
-                    x = np.concatenate([x, np.zeros((z - a - len(x), 2))])
+                n = min(chunk, frames - s0)
+                x = ext_read(s0, n, P, P)
                 x *= gain
                 y = lim.process(x, n)
                 # output true peak, measured with 16 samples of context from the previous chunk
@@ -234,26 +284,29 @@ def master_to_files(read_chunk: Callable[[int, int], np.ndarray], frames: int, s
                 prev_tail = y[-16:]
                 out_meter.feed(y)
                 y.astype(np.float32).tofile(fo)
-                prog(0.25 + 0.45 * min(1.0, (attempt + (s + n) / frames) / LIMIT_PASSES),
-                     f"Limiter (ronde {attempt + 1})")
+                prog(0.35 + 0.35 * min(1.0, (attempt + (s0 + n) / frames) / max(1, LIMIT_PASSES - 1)),
+                     "Limiter" if attempt == 0 else f"Limiter (correctie {attempt})")
         tp_db = 20 * np.log10(max(tp_out, 1e-12))
         out_lufs = out_meter.result()
         if not np.isfinite(out_lufs):
             break
-        hist.append((gain_db, out_lufs))
         err = target_lufs - out_lufs
         tp_ok = tp_db <= true_peak_db_ + 0.01
-        if tp_ok and abs(err) <= LUFS_TOL:
-            break
-        if attempt == LIMIT_PASSES - 1:
+        if (tp_ok and abs(err) <= LUFS_TOL) or attempt == LIMIT_PASSES - 1:
             break
         if not tp_ok:
             ceiling -= (tp_db - true_peak_db_) + 0.05
-        slope = 0.8                 # d(out LUFS)/d(gain dB) is < 1 when the limiter works
-        if len(hist) >= 2 and abs(hist[-1][0] - hist[-2][0]) > 0.05:
-            slope = (hist[-1][1] - hist[-2][1]) / (hist[-1][0] - hist[-2][0])
-            slope = float(np.clip(slope, 0.2, 1.0))
-        gain_db += float(np.clip(err / slope, -6.0, 6.0))
+        hist.append((gain_db, out_lufs))
+        # slope from previous full passes, else locally from the sample search
+        if len(hist) >= 2:
+            gain_db = secant(hist, target_lufs, gain_db)
+        else:
+            near = sorted(sh, key=lambda h: abs(h[0] - gain_db))[:2]
+            if len(near) == 2 and abs(near[0][0] - near[1][0]) > 0.02:
+                slope = float(np.clip((near[0][1] - near[1][1]) / (near[0][0] - near[1][0]), 0.15, 1.0))
+            else:
+                slope = 0.6
+            gain_db += float(np.clip(err / slope, -6.0, 6.0))
     # static safety trim if the last pass still overshoots the true-peak ceiling
     post = 1.0
     if tp_db > true_peak_db_ + 0.01:
