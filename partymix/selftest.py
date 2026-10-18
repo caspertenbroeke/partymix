@@ -54,6 +54,7 @@ def run(verbose: bool = True) -> int:
             say(f"   {name}: {fn()}")
         mp = paths.model_path()
         say(f"   model: {mp} ({'aanwezig' if mp.exists() else 'ONTBREEKT'})")
+        say(f"   onnxruntime providers: {', '.join(onnxruntime.get_available_providers())}")
         if not mp.exists():
             ok = False
             raise FileNotFoundError("stemscheidingsmodel ontbreekt")
@@ -64,6 +65,8 @@ def run(verbose: bool = True) -> int:
             _click_track(files[0], 126.0, 50, pitch=220.0)
             _click_track(files[1], 128.0, 50, pitch=330.0)
             from partymix.analysis import analyze_track
+            from partymix.analysis.vocals import device_name
+            say(f"   stemscheiding op: {device_name()}")
             an = [analyze_track(f) for f in files]
             for a, want in zip(an, (126.0, 128.0)):
                 say(f"   {os.path.basename(a.path)}: {a.bpm:.2f} BPM (verwacht {want})")

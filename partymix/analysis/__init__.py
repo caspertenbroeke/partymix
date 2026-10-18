@@ -151,9 +151,10 @@ def analyze_track(path: Union[str, os.PathLike], progress_cb: ProgressCb = None,
         voc, _ = read_audio(d / "voc.flac")
     else:
         def sep_prog(f: float) -> None:
-            report(0.22 + 0.63 * f, f"{name}: zang en muziek scheiden… {int(f * 100)}%")
+            report(0.22 + 0.63 * f, f"{name}: zang en muziek scheiden ({dev})… {int(f * 100)}%")
         report(0.22, f"{name}: stemscheidingsmodel laden…")
         _voc.ensure_model(lambda f, m: report(0.22, m))
+        dev = _voc.device_name()
         inst, voc = _voc.separate(audio, progress=sep_prog, cancel=is_cancelled)
         report(0.85, f"{name}: stems opslaan…")
         g = choose_gain(audio, inst, voc)

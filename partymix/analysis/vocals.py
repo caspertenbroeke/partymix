@@ -117,32 +117,74 @@ def _istft(S: np.ndarray, length: int) -> np.ndarray:
 class MdxSeparator:
     """Holds the onnxruntime session; reuse it for several tracks."""
 
-    def __init__(self, model: Optional[Path] = None, threads: Optional[int] = None):
+    def __init__(self, model: Optional[Path] = None, threads: Optional[int] = None,
+                 device: Optional[str] = None):
         import onnxruntime as ort
         model = Path(model) if model else ensure_model()
-        so = ort.SessionOptions()
-        so.intra_op_num_threads = threads or max(1, os.cpu_count() or 1)
-        so.inter_op_num_threads = 1
-        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        so.log_severity_level = 3
-        # the arena keeps ~1.2 GB of peak activations alive between runs; without it the
-        # process stays at ~1.4 GB with no measurable speed loss
-        so.enable_cpu_mem_arena = False
-        so.enable_mem_pattern = False
-        self.session = ort.InferenceSession(str(model), sess_options=so, providers=["CPUExecutionProvider"])
         self.chunk = HOP * (DIM_T - 1)          # 261120 samples ≈ 5.9 s
         self.trim = N_FFT // 2
+        want = (device or os.environ.get("PARTYMIX_DEVICE", "auto")).lower()
+        avail = set(ort.get_available_providers())
+        gpu_order = [p for p in ("CUDAExecutionProvider", "DmlExecutionProvider") if p in avail]
+        candidates = ([] if want == "cpu" else gpu_order) + ["CPUExecutionProvider"]
+        self.session = None
+        for prov in candidates:
+            so = ort.SessionOptions()
+            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            so.log_severity_level = 3
+            so.enable_mem_pattern = False
+            if prov == "CPUExecutionProvider":
+                so.intra_op_num_threads = threads or max(1, os.cpu_count() or 1)
+                so.inter_op_num_threads = 1
+                # the arena keeps ~1.2 GB of peak activations alive between runs; without it the
+                # process stays at ~1.4 GB with no measurable speed loss
+                so.enable_cpu_mem_arena = False
+            else:
+                so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            try:
+                sess = ort.InferenceSession(str(model), sess_options=so, providers=[prov])
+                if prov != "CPUExecutionProvider":
+                    # make sure the GPU really works (drivers!) and is really fast: without a real
+                    # video card DirectML runs on the software "Basic Render" adapter, slower than the CPU
+                    import time
+                    z = np.zeros((1, 4, DIM_F, DIM_T), np.float32)
+                    sess.run(None, {"input": z})
+                    t0 = time.perf_counter()
+                    sess.run(None, {"input": z})
+                    if time.perf_counter() - t0 > float(os.environ.get("PARTYMIX_GPU_MAX_S", "1.0")):
+                        continue
+                self.session, self.provider = sess, prov
+                break
+            except Exception:
+                continue
+        if self.session is None:
+            raise RuntimeError("onnxruntime kon het stemscheidingsmodel niet laden")
+        self.on_gpu = self.provider != "CPUExecutionProvider"
+        self.device_name = {"CUDAExecutionProvider": "videokaart (CUDA)",
+                            "DmlExecutionProvider": "videokaart (DirectML)"}.get(self.provider, "processor")
+        # several chunks per model call on the GPU; on the CPU batching gives no speed-up
+        self.batch = int(os.environ.get("PARTYMIX_BATCH", "4" if self.on_gpu else "1"))
+
+    def _spec(self, wave: np.ndarray) -> np.ndarray:
+        S = _stft(wave)[:, :DIM_F]                                        # [2, 3072, 256]
+        spek = np.stack([S.real, S.imag], axis=1).reshape(4, DIM_F, -1).astype(np.float32)
+        spek[:, :3, :] = 0.0
+        return spek
+
+    def _run_batch(self, waves: list) -> list:
+        """Model on chunks ``[2, chunk]`` → instrumental chunks ``[2, chunk]`` (one model call)."""
+        spek = np.stack([self._spec(w) for w in waves])                  # [B, 4, 3072, 256]
+        outs = self.session.run(None, {"input": spek})[0]                # [B, 4, 3072, 256]
+        res = []
+        for out in outs:
+            out = out.reshape(2, 2, DIM_F, -1)
+            full = np.zeros((2, N_FFT // 2 + 1, out.shape[-1]), np.complex64)
+            full[:, :DIM_F] = out[:, 0] + 1j * out[:, 1]
+            res.append(_istft(full, self.chunk))
+        return res
 
     def _run(self, wave: np.ndarray) -> np.ndarray:
-        """Model on one chunk ``[2, chunk]`` → instrumental ``[2, chunk]``."""
-        S = _stft(wave)[:, :DIM_F]                                        # [2, 3072, 256]
-        spek = np.stack([S.real, S.imag], axis=1).reshape(1, 4, DIM_F, -1).astype(np.float32)
-        spek[:, :, :3, :] = 0.0
-        out = self.session.run(None, {"input": spek})[0][0]               # [4, 3072, 256]
-        out = out.reshape(2, 2, DIM_F, -1)
-        full = np.zeros((2, N_FFT // 2 + 1, out.shape[-1]), np.complex64)
-        full[:, :DIM_F] = out[:, 0] + 1j * out[:, 1]
-        return _istft(full, self.chunk)
+        return self._run_batch([wave])[0]
 
     def instrumental(self, mix: np.ndarray, overlap: float = OVERLAP, progress: ProgressCb = None,
                      cancel: CancelCb = None) -> np.ndarray:
@@ -158,23 +200,37 @@ class MdxSeparator:
         result = np.zeros((2, L), np.float32)
         divider = np.zeros(L, np.float32)
         starts = list(range(0, L, step))
-        for k, i in enumerate(starts):
+        B = max(1, self.batch)
+        for k0 in range(0, len(starts), B):
             if cancel is not None and cancel():
                 raise InterruptedError("geannuleerd")
-            end = min(i + chunk, L)
-            part = mixture[:, i:end]
-            if end - i < chunk:
-                part = np.concatenate([part, np.zeros((2, chunk - (end - i)), np.float32)], axis=1)
-            y = self._run(part)[:, :end - i]
-            if overlap != 0:
-                w = np.hanning(end - i).astype(np.float32)
-                result[:, i:end] += y * w
-                divider[i:end] += w
-            else:
-                result[:, i:end] += y
-                divider[i:end] += 1
+            group = starts[k0:k0 + B]
+            parts = []
+            for i in group:
+                end = min(i + chunk, L)
+                part = mixture[:, i:end]
+                if end - i < chunk:
+                    part = np.concatenate([part, np.zeros((2, chunk - (end - i)), np.float32)], axis=1)
+                parts.append(part)
+            try:
+                ys = self._run_batch(parts)
+            except Exception:
+                if B == 1:
+                    raise
+                ys = [self._run(pt) for pt in parts]   # e.g. GPU out of memory: one at a time
+                self.batch = B = 1
+            for i, y in zip(group, ys):
+                end = min(i + chunk, L)
+                y = y[:, :end - i]
+                if overlap != 0:
+                    w = np.hanning(end - i).astype(np.float32)
+                    result[:, i:end] += y * w
+                    divider[i:end] += w
+                else:
+                    result[:, i:end] += y
+                    divider[i:end] += 1
             if progress:
-                progress((k + 1) / len(starts))
+                progress(min(1.0, (k0 + len(group)) / len(starts)))
         with np.errstate(invalid="ignore", divide="ignore"):
             out = result / divider
         return out[:, trim:L - trim][:, :n]
@@ -200,13 +256,23 @@ class MdxSeparator:
 _SEP: Optional[MdxSeparator] = None
 
 
-def separate(audio: np.ndarray, progress: ProgressCb = None, cancel: CancelCb = None,
-             model: Optional[Path] = None) -> Tuple[np.ndarray, np.ndarray]:
-    """Convenience wrapper with a per-process cached :class:`MdxSeparator`."""
+def get_separator(model: Optional[Path] = None) -> MdxSeparator:
+    """Per-process cached :class:`MdxSeparator` (GPU when available, else CPU)."""
     global _SEP
     if _SEP is None:
         _SEP = MdxSeparator(model)
-    return _SEP.separate(audio, progress=progress, cancel=cancel)
+    return _SEP
+
+
+def device_name() -> str:
+    """Dutch name of the device used for separation ("videokaart (DirectML)" / "processor")."""
+    return get_separator().device_name
+
+
+def separate(audio: np.ndarray, progress: ProgressCb = None, cancel: CancelCb = None,
+             model: Optional[Path] = None) -> Tuple[np.ndarray, np.ndarray]:
+    """Convenience wrapper with a per-process cached :class:`MdxSeparator`."""
+    return get_separator(model).separate(audio, progress=progress, cancel=cancel)
 
 
 if __name__ == "__main__":  # quick manual check: python -m partymix.analysis.vocals in.wav

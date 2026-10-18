@@ -74,10 +74,12 @@ datas += _optional(copy_metadata, "mido")          # mido/version.py reads its m
 hiddenimports += collect_submodules("numpy.core") + collect_submodules("numpy._core")
 hiddenimports += ["mido", "scipy.signal", "scipy.ndimage", "scipy.interpolate", "scipy.spatial"]
 
-# onnxruntime (CPU): native DLLs/so's + capi; metadata is queried at import.
+# onnxruntime (DirectML build on Windows, CPU elsewhere): native DLLs (incl. DirectML.dll) + capi;
+# metadata is queried at import.
 binaries += collect_dynamic_libs("onnxruntime")
 hiddenimports += collect_submodules("onnxruntime.capi")
 datas += _optional(copy_metadata, "onnxruntime")
+datas += _optional(copy_metadata, "onnxruntime-directml")
 
 # soundfile ships libsndfile in the _soundfile_data package (hooks-contrib also handles this).
 binaries += _optional(collect_dynamic_libs, "_soundfile_data")
