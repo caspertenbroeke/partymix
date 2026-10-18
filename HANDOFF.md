@@ -8,7 +8,7 @@ Doel: Windows-app die precies doet wat "Half uur mix v2" deed (zie reference/PLA
   Op de 14 echte tracks: 30:06 bij doel 30 min, keuzes ≈ handplan v2.
 
 ## Status 01:30
-Alle 5 modules af. Windows CI volledig groen (incl. installer + selftest op Windows). Bezig: end-to-end test op 14 echte tracks (test_out/e2e), daarna release v0.1.0.
+Alle 5 modules af. Release v0.1.0 gepubliceerd (via GitHub UI, tag-push vanuit sessie geblokkeerd); CI bouwt en uploadt installer naar de release. Eventueel nog: e2e-test 14 tracks (gebruiker test zelf).
 
 ## Was nog bezig (historisch) (agents, check of hun bestanden af zijn — WIP gecommit)
 - analysis (`partymix/audio_io.py`, `partymix/analysis/*`): madmom beats/downbeats + grid-fit, key, ONNX vocal separation (port van audio-separator, zonder torch), per-bar features, cache.
