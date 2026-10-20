@@ -24,9 +24,13 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
+import logging
+
 import numpy as np
 
 from .. import paths
+
+log = logging.getLogger("partymix")
 
 N_FFT = 6144
 HOP = 1024
@@ -123,47 +127,80 @@ class MdxSeparator:
         model = Path(model) if model else ensure_model()
         self.chunk = HOP * (DIM_T - 1)          # 261120 samples ≈ 5.9 s
         self.trim = N_FFT // 2
+        self._model = model
+        self._threads = threads
         want = (device or os.environ.get("PARTYMIX_DEVICE", "auto")).lower()
         avail = set(ort.get_available_providers())
-        gpu_order = [p for p in ("CUDAExecutionProvider", "DmlExecutionProvider") if p in avail]
-        candidates = ([] if want == "cpu" else gpu_order) + ["CPUExecutionProvider"]
         self.session = None
-        for prov in candidates:
-            so = ort.SessionOptions()
-            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            so.log_severity_level = 3
-            so.enable_mem_pattern = False
-            if prov == "CPUExecutionProvider":
-                so.intra_op_num_threads = threads or max(1, os.cpu_count() or 1)
-                so.inter_op_num_threads = 1
-                # the arena keeps ~1.2 GB of peak activations alive between runs; without it the
-                # process stays at ~1.4 GB with no measurable speed loss
-                so.enable_cpu_mem_arena = False
-            else:
-                so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-            try:
-                sess = ort.InferenceSession(str(model), sess_options=so, providers=[prov])
-                if prov != "CPUExecutionProvider":
-                    # make sure the GPU really works (drivers!) and is really fast: without a real
-                    # video card DirectML runs on the software "Basic Render" adapter, slower than the CPU
-                    import time
-                    z = np.zeros((1, 4, DIM_F, DIM_T), np.float32)
-                    sess.run(None, {"input": z})
-                    t0 = time.perf_counter()
-                    sess.run(None, {"input": z})
-                    if time.perf_counter() - t0 > float(os.environ.get("PARTYMIX_GPU_MAX_S", "1.0")):
-                        continue
-                self.session, self.provider = sess, prov
-                break
-            except Exception:
-                continue
+        self.provider = "CPUExecutionProvider"
+        if want != "cpu":
+            best = None   # (seconds per chunk, provider, options, session)
+            cands = []
+            if "CUDAExecutionProvider" in avail:
+                cands.append(("CUDAExecutionProvider", {}))
+            if "DmlExecutionProvider" in avail:
+                ids = [int(os.environ["PARTYMIX_GPU_ID"])] if os.environ.get("PARTYMIX_GPU_ID") else range(4)
+                cands += [("DmlExecutionProvider", {"device_id": i}) for i in ids]
+            for prov, po in cands:
+                try:
+                    t, sess = self._bench(ort, prov, po)
+                except Exception as exc:          # adapter does not exist / driver problem
+                    log.info("GPU %s %s niet bruikbaar: %s", prov, po, exc)
+                    continue
+                log.info("GPU %s %s: %.2f s per blok", prov, po, t)
+                if best is None or t < best[0]:
+                    best = (t, prov, po, sess)
+            # without a real video card DirectML runs on the software "Basic Render" adapter,
+            # which is slower than the CPU: only use the GPU when it is really fast
+            if best is not None and best[0] <= float(os.environ.get("PARTYMIX_GPU_MAX_S", "1.0")):
+                _, self.provider, self.provider_options, self.session = best
         if self.session is None:
-            raise RuntimeError("onnxruntime kon het stemscheidingsmodel niet laden")
+            self.session = self._cpu_session(ort)
+            self.provider = "CPUExecutionProvider"
         self.on_gpu = self.provider != "CPUExecutionProvider"
         self.device_name = {"CUDAExecutionProvider": "videokaart (CUDA)",
-                            "DmlExecutionProvider": "videokaart (DirectML)"}.get(self.provider, "processor")
-        # several chunks per model call on the GPU; on the CPU batching gives no speed-up
-        self.batch = int(os.environ.get("PARTYMIX_BATCH", "4" if self.on_gpu else "1"))
+                            "DmlExecutionProvider": "videokaart"}.get(self.provider, "processor")
+        # one chunk per call: big batches can make Windows reset a busy GPU (TDR) mid-separation
+        self.batch = int(os.environ.get("PARTYMIX_BATCH", "1"))
+        log.info("stemscheiding op %s (%s)", self.device_name, self.provider)
+
+    def _cpu_session(self, ort):
+        so = ort.SessionOptions()
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        so.log_severity_level = 3
+        so.enable_mem_pattern = False
+        so.intra_op_num_threads = self._threads or max(1, os.cpu_count() or 1)
+        so.inter_op_num_threads = 1
+        # the arena keeps ~1.2 GB of peak activations alive between runs; without it the
+        # process stays at ~1.4 GB with no measurable speed loss
+        so.enable_cpu_mem_arena = False
+        return ort.InferenceSession(str(self._model), sess_options=so, providers=["CPUExecutionProvider"])
+
+    def _bench(self, ort, prov, po):
+        import time
+        so = ort.SessionOptions()
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        so.log_severity_level = 3
+        so.enable_mem_pattern = False
+        so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        sess = ort.InferenceSession(str(self._model), sess_options=so, providers=[(prov, po)])
+        if sess.get_providers()[0] != prov:      # silently fell back to the CPU
+            raise RuntimeError("provider niet actief")
+        z = np.zeros((1, 4, DIM_F, DIM_T), np.float32)
+        sess.run(None, {"input": z})
+        t0 = time.perf_counter()
+        sess.run(None, {"input": z})
+        return time.perf_counter() - t0, sess
+
+    def _fallback_to_cpu(self, exc: Exception) -> None:
+        """The GPU failed during a run (driver reset, out of memory …): continue on the CPU."""
+        import onnxruntime as ort
+        log.warning("videokaart gaf een fout tijdens stemscheiding, verder op de processor: %s", exc)
+        self.session = self._cpu_session(ort)
+        self.provider = "CPUExecutionProvider"
+        self.on_gpu = False
+        self.device_name = "processor (videokaart gaf een fout)"
+        self.batch = 1
 
     def _spec(self, wave: np.ndarray) -> np.ndarray:
         S = _stft(wave)[:, :DIM_F]                                        # [2, 3072, 256]
@@ -174,7 +211,13 @@ class MdxSeparator:
     def _run_batch(self, waves: list) -> list:
         """Model on chunks ``[2, chunk]`` → instrumental chunks ``[2, chunk]`` (one model call)."""
         spek = np.stack([self._spec(w) for w in waves])                  # [B, 4, 3072, 256]
-        outs = self.session.run(None, {"input": spek})[0]                # [B, 4, 3072, 256]
+        try:
+            outs = self.session.run(None, {"input": spek})[0]            # [B, 4, 3072, 256]
+        except Exception as exc:
+            if not self.on_gpu:
+                raise
+            self._fallback_to_cpu(exc)
+            outs = self.session.run(None, {"input": spek})[0]
         res = []
         for out in outs:
             out = out.reshape(2, 2, DIM_F, -1)

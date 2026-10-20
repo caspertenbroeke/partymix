@@ -25,11 +25,13 @@ import numpy as np
 
 from ..model import MixPlan, PlannedTrack, TrackAnalysis, Transition
 from .common import (MAX_STRETCH, bass_levels, cut_tempos, camelot_distance, layout, max_stretch, mean,
+                     parse_camelot,
                      n_bars_of, rms_levels, round_half, stretch_feasible, tempo_gap,
                      transition_tempo, vocal_levels)
 
 BASS_ON = 7.5          # 4-bar mean bass level counted as "bass is in" (full bass)
 MIN_PLAY_SEC = 45.0
+MASHUPS = True        # v0.3: mashup transitions (one vocal + one beat at a time)
 END_FADE = 8
 INF = 1e9
 
@@ -200,10 +202,55 @@ def out_cost(p: Profile, e: int, ov: int, last: bool = False) -> float:
         rise_after = p.B(e, e + 4) - p.B(e - 4, e)
         if rise_after >= 3.0 and p.B(e, e + 8) >= 6.5:
             c += 0.3                                 # leaving right before A's own drop
+    if not last and e < p.n - 2:
+        if p.V(e - 1, e) >= 5.5 and p.V(e, e + 1) >= 5.5:
+            c += 1.2                                 # would stop in the middle of a sung line
+        if bs < 1.0 and p.B(e - 4, e) >= 7.0 and p.B(e, e + 4) >= 7.0:
+            c += 0.6                                 # would stop in the middle of a drop / climax
     if last:
         rest = p.n - e
         c += 0.0 if rest <= 8 else (1.0 if bs >= 2.0 else 1.5)    # finale: let the last track end naturally
     return c
+
+
+# --------------------------------------------------------------------------------------------
+# keys for mashups
+# --------------------------------------------------------------------------------------------
+def shifted_key(code: str, semis: int) -> str:
+    """Camelot code after transposing by ``semis`` semitones (+1 semitone = +7 wheel steps)."""
+    pc = parse_camelot(code)
+    if pc is None:
+        return ""
+    n, mode = pc
+    return f"{(n - 1 + 7 * semis) % 12 + 1}{mode}"
+
+
+def vocal_shift(vocal_key: str, beat_key: str, max_semis: int = 2) -> Optional[int]:
+    """Smallest pitch shift (semitones) that makes a vocal fit a beat; None if not possible."""
+    if camelot_distance(vocal_key, beat_key) >= 99:
+        return 0                                     # unknown key: don't touch it
+    for k in sorted(range(-max_semis, max_semis + 1), key=abs):
+        if camelot_distance(shifted_key(vocal_key, k), beat_key) <= 1:
+            return k
+    return None
+
+
+def find_hook(p: Profile, lo: int, hi: int, length: int = 8) -> Optional[int]:
+    """Start bar of the strongest sung phrase (chorus/hook) in [lo, hi): phrase-aligned, vocals all the way,
+    with a vocal onset at its start so it begins with the start of a line."""
+    best = None
+    for h in p.grid(max(lo, 1), min(hi, p.n - length)):
+        if not p.phrase(h):
+            continue
+        v = p.V(h, h + length)
+        vmin = float(np.min(p.vocal[h:h + length])) if h + length <= len(p.vocal) else 0.0
+        onset = p.V(h, h + 1) - p.V(h - 1, h)
+        if v < 6.0 or vmin < 3.5 or onset < 1.0:
+            continue
+        score = v + 0.3 * min(onset, 4.0) + 0.1 * p.B(h, h + length)
+        if best is None or score > best[0]:
+            best = (score, h)
+    return None if best is None else best[1]
 
 
 # --------------------------------------------------------------------------------------------
@@ -216,6 +263,8 @@ def choose_preset(pa: Profile, pb: Profile, e: int, opt: InOpt, a_bpm: float, b_
     ov = opt.ov
     aB = pa.B(e - ov, e)
     sw = opt.swap
+    if MASHUPS and ov >= 8:
+        return choose_mash(pa, pb, e, opt, aB)
     if aB < 3.5:
         return ("swap", {"swap": 0.0, "fadein": 0.5, "lpin": True, "lpdur": 0.5},
                 "uitgaand nummer zit in een break zonder bas: bas van het nieuwe nummer meteen erin")
@@ -230,6 +279,35 @@ def choose_preset(pa: Profile, pb: Profile, e: int, opt: InOpt, a_bpm: float, b_
     if opt.bass_in_intro:
         return "swap", {"swap": sw, "fadein": 0.25}, "intro heeft al bas: bas-wissel halverwege"
     return "swap_hp", {"swap": sw, "fadein": 0.25, "lpin": True}, "bas-wissel op de bas-entree, A met hoogdoorlaat eruit"
+
+
+def choose_mash(pa: Profile, pb: Profile, e: int, opt: InOpt, aB: float) -> Tuple[str, Dict, str]:
+    """Mashup transition: one vocal + one beat at a time (see render.mixer.mash_envelopes)."""
+    ov = opt.ov
+    sw = 0.0 if aB < 3.5 else opt.swap
+    sw = min(max(sw, 0.25), 0.75) if ov == 16 else (0.5 if sw not in (0.5, 1.0) else sw)
+    ka, kb = pa.t.key, pb.t.key
+    fits = camelot_distance(ka, kb) <= 1 or camelot_distance(ka, kb) >= 99
+    sb = e - ov + int(round(sw * ov))
+    post = e - sb
+    # 1) A's last sung line continues over B's beat
+    if fits and post >= 4 and pa.V(sb, e) >= 5.0 and pa.V(e, e + 1) < 5.0:
+        return ("mash", {"dir": "back", "swap": sw},
+                "mashup: laatste zin van het oude nummer over de beat van het nieuwe")
+    # 2) B's hook over A's beat, B drops in on its main section
+    h = find_hook(pb, opt.W, opt.W + 64)
+    if h is not None:
+        k = vocal_shift(kb, ka)
+        if k is not None:
+            lo = 8
+            why = "mashup: refrein van het nieuwe nummer over de beat van het oude"
+            if k:
+                why += f" (zang {k:+d} halve toon)".replace("+1 halve toon", "+1 halve toon")
+            return ("mash", {"dir": "fwd", "swap": 1.0, "ovl_from": round((ov - lo) / ov, 4),
+                             "ovl": {"src_bar": int(h), "len": lo, "at": ov - lo, "semis": int(k)}}, why)
+    # 3) clean swap: B's beat teases in filtered for 2 bars, A echoes out on the swap
+    return ("mash", {"dir": "none", "swap": sw, "tease": round(min(2.0 / ov, sw), 4)},
+            "schone wissel: beat van het nieuwe nummer komt gefilterd binnen, oude nummer echoot weg")
 
 
 # --------------------------------------------------------------------------------------------
@@ -271,16 +349,43 @@ def _is_cut(a: TrackAnalysis, b: TrackAnalysis) -> bool:
         and tempo_gap(a.bpm, b.bpm) >= 0.02
 
 
-def plan_mix(analyses_in_order: Sequence[TrackAnalysis], target_minutes: float = 30.0) -> MixPlan:
+def recommended_minutes(analyses_in_order: Sequence[TrackAnalysis]) -> float:
+    """Natural mix length: every track plays its intro hand-over plus its best ~1.5–2.5 min and
+    leaves on a calm, clean point (end of a section, not mid-sentence, not inside a climax)."""
+    A = list(analyses_in_order)
+    if not A:
+        return 0.0
+    total_bars_sec = 0.0
+    for i, t in enumerate(A):
+        p = profile(t)
+        opts = first_track_options(p) if i == 0 else incoming_options(p)
+        o = min(opts, key=lambda x: x.cost)
+        last = i == len(A) - 1
+        lo, hi = o.W + 24, max(o.W + 24, p.n - (0 if last else 8))
+        best = None
+        for e in p.grid(lo, hi):
+            c = out_cost(p, e, END_FADE if last else 16, last=last)
+            c += 0.012 * abs(e - (o.W + 48))          # ~48 bars of main material feels "complete"
+            if best is None or c < best[0]:
+                best = (c, e)
+        e = best[1] if best else min(p.n, o.W + 48)
+        ov_out = 0 if last else 12                     # average overlap with the next track
+        total_bars_sec += max(e - o.s - ov_out, 8) * 240.0 / max(t.bpm, 60.0)
+    return float(max(1, round(total_bars_sec / 60.0)))
+
+
+def plan_mix(analyses_in_order: Sequence[TrackAnalysis], target_minutes: Optional[float] = 30.0) -> MixPlan:
     return plan_mix_with_report(analyses_in_order, target_minutes)[0]
 
 
-def plan_mix_with_report(analyses_in_order: Sequence[TrackAnalysis], target_minutes: float = 30.0,
+def plan_mix_with_report(analyses_in_order: Sequence[TrackAnalysis], target_minutes: Optional[float] = 30.0,
                          ) -> Tuple[MixPlan, PlanReport]:
     A = list(analyses_in_order)
     n = len(A)
     if n == 0:
         raise ValueError("geen nummers om te plannen")
+    if not target_minutes or target_minutes <= 0:          # None / 0 = "aanbevolen lengte"
+        target_minutes = recommended_minutes(A)
     P = [profile(t) for t in A]
     target = float(target_minutes) * 60.0
 

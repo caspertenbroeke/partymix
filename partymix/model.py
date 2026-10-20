@@ -107,6 +107,6 @@ class RenderSettings:
     out_path: str
     formats: List[str] = field(default_factory=lambda: ["flac"])   # flac | wav | mp3
     bit_depth: int = 24
-    target_lufs: float = -10.3      # = loudness of the hand-made v2 mix
+    target_lufs: float = -11.0      # gentle limiting: cleaner, less "blikkerig"
     true_peak_db: float = -1.0
     verify: bool = False

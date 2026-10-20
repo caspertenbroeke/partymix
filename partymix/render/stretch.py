@@ -36,6 +36,7 @@ __all__ = ["StretchResult", "stem_path", "build_timemap", "stretch_track", "iter
 MARGIN_SEC = 0.05     # source seconds kept before the first bar (mapped 1:1)
 TAIL_BARS = 4         # extra bars stretched after end_bar (echo / filter tails)
 PARTS = ("inst", "voc")
+ALL_PARTS = ("mix", "inst", "voc")   # "mix" = the original (unseparated) audio
 
 
 @dataclass
@@ -45,12 +46,17 @@ class StretchResult:
     voc_path: str
     pre: float          # seconds in the stretched files before output bar offsets[i]
     frames: int
+    mix_path: Optional[str] = None      # original audio, same timeline
+    ovl_path: Optional[str] = None      # mashup vocal overlay (incoming track)
+    ovl_start: float = 0.0              # local seconds where the overlay file starts
 
     def paths(self) -> Tuple[str, str]:
         return self.inst_path, self.voc_path
 
     def cleanup(self) -> None:
-        for p in (self.inst_path, self.voc_path):
+        for p in (self.inst_path, self.voc_path, self.mix_path, self.ovl_path):
+            if not p:
+                continue
             try:
                 os.remove(p)
             except OSError:
@@ -60,8 +66,9 @@ class StretchResult:
 def stem_path(analysis: TrackAnalysis, part: str) -> str:
     """Path of the ``inst`` / ``voc`` stem in the analysis cache dir (``.flac``, else ``.wav``)."""
     d = Path(analysis.cache_dir)
+    name = "audio" if part == "mix" else part
     for ext in (".flac", ".wav"):
-        p = d / f"{part}{ext}"
+        p = d / f"{name}{ext}"
         if p.exists():
             return str(p)
     raise RenderError(f"Stem '{part}' ontbreekt in {d} ({analysis.title or analysis.path})")
@@ -134,15 +141,21 @@ def _src_frames(path: str) -> int:
 
 def stretch_track(analysis: TrackAnalysis, planned: PlannedTrack, layout: Layout, index: int,
                   workdir: str, sr: int = 44100, cancel_event=None,
-                  stems: Optional[Dict[str, str]] = None) -> StretchResult:
+                  stems: Optional[Dict[str, str]] = None, overlay: Optional[Dict] = None) -> StretchResult:
     """Stretch inst and voc stem of track ``index``; files are written into ``workdir``."""
     os.makedirs(workdir, exist_ok=True)
-    stems = stems or {p: stem_path(analysis, p) for p in PARTS}
-    frames = min(_src_frames(stems[p]) for p in PARTS)
+    stems = dict(stems or {p: stem_path(analysis, p) for p in PARTS})
+    if "mix" not in stems:
+        try:
+            stems["mix"] = stem_path(analysis, "mix")
+        except RenderError:
+            pass                                   # old cache without audio.flac: stems only
+    parts = [p for p in ALL_PARTS if p in stems]
+    frames = min(_src_frames(stems[p]) for p in parts)
     a, z, lines, pre = build_timemap(analysis, planned.start_bar, planned.end_bar, layout, index, sr, frames)
     outs = {}
     exe = paths.rubberband()
-    for part in PARTS:
+    for part in parts:
         check_cancel(cancel_event)
         # ASCII-only relative names + cwd=workdir: rubberband (libsndfile) is not unicode-safe on Windows
         raw, mp, out = f"t{index:03d}_{part}_in.wav", f"t{index:03d}_{part}.map", f"t{index:03d}_{part}.wav"
@@ -164,8 +177,62 @@ def stretch_track(analysis: TrackAnalysis, planned: PlannedTrack, layout: Layout
                 except OSError:
                     pass
         outs[part] = os.path.join(workdir, out)
-    nfr = min(sf.info(outs[p]).frames for p in PARTS)
-    return StretchResult(index=index, inst_path=outs["inst"], voc_path=outs["voc"], pre=pre, frames=nfr)
+    nfr = min(sf.info(outs[p]).frames for p in parts)
+    res = StretchResult(index=index, inst_path=outs["inst"], voc_path=outs["voc"], pre=pre, frames=nfr,
+                        mix_path=outs.get("mix"))
+    if overlay:
+        res.ovl_path, res.ovl_start = stretch_overlay(analysis, planned, layout, index, overlay, stems["voc"],
+                                                      workdir, pre, sr, cancel_event)
+    return res
+
+
+def stretch_overlay(analysis: TrackAnalysis, planned: PlannedTrack, layout: Layout, index: int,
+                    ovl: Dict, voc_src: str, workdir: str, pre: float, sr: int = 44100,
+                    cancel_event=None, margin: float = MARGIN_SEC) -> Tuple[str, float]:
+    """Mashup overlay: vocal bars ``[src_bar, src_bar+len)`` of this (incoming) track, time-mapped
+    onto its local bars ``[at, at+len)`` and optionally pitch-shifted by ``semis`` semitones.
+    Returns ``(path, local_start_seconds)`` on the same local timeline as the main files."""
+    h, Lo, at = float(ovl["src_bar"]), float(ovl["len"]), float(ovl["at"])
+    semis = float(ovl.get("semis", 0) or 0)
+    O = layout.offsets[index]
+    t_at = layout.t(O + at)
+    a_sec = analysis.bar_time(h) - margin
+    z_sec = analysis.bar_time(h + Lo) + 0.25
+    a, z = int(round(a_sec * sr)), int(round(z_sec * sr))
+    lines: List[Tuple[int, int]] = [(0, 0)]
+    for q in range(int(Lo * 4) + 1):
+        st = analysis.bar_time(h + q / 4) - a_sec
+        ot = layout.t(O + at + q / 4) - t_at + margin
+        li, lo = int(round(st * sr)), int(round(ot * sr))
+        if li > lines[-1][0] and lo > lines[-1][1]:
+            lines.append((li, lo))
+    x = _read_slice(voc_src, a, z)
+    n = len(x)
+    # short fades so the overlay never starts/stops with a click
+    f = min(int(0.02 * sr), n // 4)
+    if f > 0:
+        r = np.linspace(0, 1, f, dtype=np.float32)[:, None]
+        x[:f] *= r
+        x[-f:] *= r[::-1]
+    raw, mp, out = f"t{index:03d}_ovl_in.wav", f"t{index:03d}_ovl.map", f"t{index:03d}_ovl.wav"
+    sf.write(os.path.join(workdir, raw), x, sr, subtype="FLOAT")
+    with open(os.path.join(workdir, mp), "w", newline="\n") as fh:
+        fh.write("".join(f"{li} {lo}\n" for li, lo in lines))
+    li, lo = lines[-1]
+    outlen = lo + int((n - li) * (lo / max(li, 1)))
+    cmd = [paths.rubberband(), "-q", "-3", "-M", mp, "-D", f"{outlen / sr:.6f}"]
+    if abs(semis) > 1e-3:
+        cmd += ["-p", f"{semis:g}", "-F"]          # pitch shift, keep formants (natural voice)
+    try:
+        run_tool(cmd + [raw, out], cwd=workdir, cancel_event=cancel_event, what="rubberband")
+    finally:
+        for fn in (raw, mp):
+            try:
+                os.remove(os.path.join(workdir, fn))
+            except OSError:
+                pass
+    local_start = (t_at - layout.t(O)) + pre - margin
+    return os.path.join(workdir, out), local_start
 
 
 def iter_stretched(plan: MixPlan, analyses: Sequence[TrackAnalysis], layout: Layout, workdir: str,
@@ -193,8 +260,11 @@ def iter_stretched(plan: MixPlan, analyses: Sequence[TrackAnalysis], layout: Lay
         for i in range(n):
             while nxt < n and nxt < i + ahead:
                 st = stems[nxt] if stems is not None else None
+                ovl = None
+                if nxt > 0 and plan.transitions[nxt - 1].options.get("ovl"):
+                    ovl = plan.transitions[nxt - 1].options["ovl"]
                 pending.append(ex.submit(stretch_track, analyses[nxt], plan.tracks[nxt], layout, nxt,
-                                         workdir, sr, ce, st))
+                                         workdir, sr, ce, st, ovl))
                 nxt += 1
             fut: Future = pending.popleft()
             while True:

@@ -250,9 +250,12 @@ class MainWindow(QMainWindow):
         g.setVerticalSpacing(10)
         g.setColumnStretch(1, 1)
         self.minutes = QSpinBox()
-        self.minutes.setRange(5, 240)
+        self.minutes.setRange(0, 240)
         self.minutes.setSingleStep(5)
-        self.minutes.setValue(30)
+        self.minutes.setSpecialValueText("Aanbevolen (automatisch)")   # 0 = natural length per set
+        self.minutes.setToolTip("Laat op 'Aanbevolen' staan: PartyMix kiest de lengte waarbij elk nummer\n"
+                                "zijn beste stuk speelt en op een rustig punt stopt.")
+        self.minutes.setValue(0)
         self.minutes.setSuffix(" minuten")
         self.minutes.lineEdit().setTextMargins(6, 0, 0, 0)
         self.fmt = QComboBox()
@@ -462,7 +465,7 @@ class MainWindow(QMainWindow):
     def _load_settings(self) -> None:
         s = self.settings
         music = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MusicLocation) or str(Path.home())
-        self.minutes.setValue(int(s.value("minutes", 30)))
+        self.minutes.setValue(int(s.value("minutes_v3", 0)))
         code = s.value("format", "flac")
         self.fmt.setCurrentIndex(max(0, [c for _, c in FORMATS].index(code) if code in [c for _, c in FORMATS] else 0))
         self.mp3.setChecked(str(s.value("mp3", "false")).lower() in ("true", "1"))
@@ -477,7 +480,7 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self) -> None:
         s = self.settings
-        s.setValue("minutes", self.minutes.value())
+        s.setValue("minutes_v3", self.minutes.value())
         s.setValue("format", self.fmt.currentData())
         s.setValue("mp3", self.mp3.isChecked())
         s.setValue("outdir", self.outdir.text())

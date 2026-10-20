@@ -400,7 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--workers", type=int, default=None, help="aantal parallelle analyses (standaard 1–2)")
 
     def order_opts(sp):
-        sp.add_argument("--minutes", type=float, default=30.0, help="doelduur in minuten (standaard 30)")
+        sp.add_argument("--minutes", type=float, default=0.0, help="doelduur in minuten (standaard 0 = aanbevolen lengte)")
         sp.add_argument("--order", choices=("auto", "given"), default="auto",
                         help="auto = slimme volgorde, given = volgorde zoals opgegeven")
         sp.add_argument("--first", help="vast eerste nummer (nummer 1..n of deel van de naam)")

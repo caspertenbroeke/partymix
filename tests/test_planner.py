@@ -14,7 +14,7 @@ from partymix.planner._fixtures import load_reference_tracks, reference_plan
 from partymix.planner.common import MAX_STRETCH, camelot_relation, stretch_feasible
 from partymix.planner.order import explain_order
 
-PRESETS = {"xfade", "swap", "swap_hp", "editor", "echo_out", "echo_cut", "double"}
+PRESETS = {"xfade", "swap", "swap_hp", "editor", "echo_out", "echo_cut", "double", "mash"}
 
 
 @pytest.fixture(scope="module")
@@ -138,7 +138,7 @@ def test_v2_comparison_with_hand_plan(tracks):
             sh = hp.tracks[i + 1].start_bar + h.options.get("swap", .5) * h.overlap_bars
             same_swap += abs(sa - sh) <= 4
     assert same_w >= 10
-    assert same_swap >= 8
+    assert same_swap >= 6          # v0.3 mashups move some swap points on purpose
     # the Brokko Maken → Axel F key+tempo jump is an echo cut, as in the hand plan
     assert plan.transitions[11].preset == "echo_cut"
 
@@ -213,7 +213,11 @@ def test_synthetic_intro_rules():
     # swap = bass entry at the window end, or 0 when the outgoing window has no bass (outro)
     e = plan.tracks[0].end_bar
     a_has_bass = max(A[0].bar_bass[e - plan.transitions[0].overlap_bars:e]) > -10
-    assert plan.transitions[0].options["swap"] == (1.0 if a_has_bass else 0.0)
+    tr0 = plan.transitions[0]
+    if tr0.preset == "mash":       # v0.3: mashup swap points are 0.5 or 1.0 (8 bars) / 0.25–1.0 (16 bars)
+        assert 0.25 <= tr0.options["swap"] <= 1.0
+    else:
+        assert tr0.options["swap"] == (1.0 if a_has_bass else 0.0)
 
 
 def test_robust_to_missing_data():

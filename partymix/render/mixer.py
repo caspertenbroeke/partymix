@@ -41,7 +41,7 @@ from .stretch import StretchResult
 __all__ = ["PRESETS", "preset_envelopes", "MasterBuffer", "mix_track", "output_frames",
            "TRACK_LUFS", "BLK", "OUTPUT_TAIL_SEC"]
 
-PRESETS = ("xfade", "swap", "swap_hp", "editor", "echo_out", "echo_cut", "double")
+PRESETS = ("xfade", "swap", "swap_hp", "editor", "echo_out", "echo_cut", "double", "mash")
 TRACK_LUFS = -14.0
 BLK = 512
 BASS_HZ = 160.0
@@ -88,6 +88,49 @@ def preset_envelopes(name: str, role: str, u: np.ndarray, opt: Dict) -> Tuple[np
     lpd = opt.get("lpdur", max(sw, 0.25) if sw < 1 else 0.5)
     filt = -0.65 * (1 - _sm(_rp(u, 0, lpd))) if opt.get("lpin") else zero.copy()
     return vol, bass, filt, zero.copy(), voc
+
+
+def mash_envelopes(role: str, u: np.ndarray, opt: Dict, ov: int) -> Tuple[np.ndarray, ...]:
+    """Mashup transition: at any moment at most ONE vocal and ONE beat are audible.
+
+    ``opt["dir"]``: "back" = A's vocal keeps going over B's beat after the swap;
+    "fwd" = B's vocal hook (overlay, see stretch_overlay) over A's beat before the swap;
+    "none" = clean swap (B's beat teases in filtered just before the swap, A echoes out).
+    Returns ``(vol, bass, filt, fx, voc, inst, ovl)``.
+    """
+    u = np.asarray(u, dtype=float)
+    one, zero = np.ones_like(u), np.zeros_like(u)
+    d = opt.get("dir", "none")
+    sw = float(opt.get("swap", 1.0 if d == "fwd" else 0.5))
+    pre = (u < sw).astype(float)
+    post = 1.0 - pre
+    bar = 1.0 / max(ov, 1)
+    if role == "A":
+        inst = pre.copy()
+        bass = pre.copy()
+        if d == "back":
+            voc = one.copy()
+            vol = 1.0 - _sm(_rp(u, 1.0 - 0.25 * bar, 1.0))           # tiny fade on the very end
+        elif d == "fwd":
+            of = float(opt.get("ovl_from", 0.0))
+            voc = (u < of).astype(float)                             # B's hook replaces A's vocal
+            vol = pre.copy()
+        else:
+            voc = pre.copy()
+            vol = pre.copy()
+        fx = zero.copy()
+        if d != "back":
+            fx = 0.5 * ((u >= sw - 0.5 * bar) & (u < sw)).astype(float)   # A echoes out at the swap
+        return vol, bass, zero.copy(), fx, voc, inst, zero.copy()
+    tease = 0.0 if d == "fwd" else float(opt.get("tease", min(2 * bar, sw)))
+    ts = max(sw - tease, 0.0)
+    ramp = _sm(_rp(u, ts, sw)) if tease > 0 else post
+    inst = np.where(u >= sw, 1.0, ramp)
+    filt = np.where(u >= sw, 0.0, -0.65 * (1.0 - ramp)) if tease > 0 else zero.copy()
+    bass = post.copy()
+    voc = zero.copy() if d == "back" else post.copy()
+    ovl = ((u >= float(opt.get("ovl_from", 0.0))) & (u < sw)).astype(float) if d == "fwd" else zero.copy()
+    return one.copy(), bass, filt, zero.copy(), voc, inst, ovl
 
 
 @lru_cache(maxsize=4096)
@@ -206,7 +249,8 @@ def mix_track(i: int, stretched: StretchResult, plan: MixPlan, layout: Layout, m
     trs: List[Transition] = plan.transitions
     xi32 = _read_stem32(stretched.inst_path)
     xv32 = _read_stem32(stretched.voc_path)
-    m_ = min(len(xi32), len(xv32))
+    xm32 = _read_stem32(stretched.mix_path) if stretched.mix_path else None
+    m_ = min(len(xi32), len(xv32), len(xm32) if xm32 is not None else 1 << 62)
     pre = stretched.pre
     O = layout.offsets[i]
     t0 = layout.t(O)
@@ -217,8 +261,20 @@ def mix_track(i: int, stretched: StretchResult, plan: MixPlan, layout: Layout, m
     end_s = loc(L)
     N = min(m_, int(loc(L + 3) * sr))
     xi32, xv32 = xi32[:N], xv32[:N]
+    if xm32 is not None:
+        xm32 = xm32[:N]
+    xo32 = None
+    if stretched.ovl_path:
+        o = _read_stem32(stretched.ovl_path)
+        xo32 = np.zeros((N, 2), np.float32)
+        st0 = int(round(stretched.ovl_start * sr))
+        a0, b0 = max(st0, 0), min(st0 + len(o), N)
+        if b0 > a0:
+            xo32[a0:b0] = o[a0 - st0:b0 - st0]
+        del o
     ba, bz = max(0, int(loc(0) * sr)), int(end_s * sr)
-    body = xi32[ba:bz].astype(np.float64) + xv32[ba:bz].astype(np.float64)
+    body = (xm32[ba:bz].astype(np.float64) if xm32 is not None
+            else xi32[ba:bz].astype(np.float64) + xv32[ba:bz].astype(np.float64))
     lu = loudness_of_loud_part(body, sr)
     del body
     gain = 10 ** ((track_lufs - lu) / 20) if np.isfinite(lu) else 1.0
@@ -226,22 +282,31 @@ def mix_track(i: int, stretched: StretchResult, plan: MixPlan, layout: Layout, m
     nb = N // BLK + 1
     tb = (np.arange(nb) + 0.5) * BLK / sr
     vol = np.ones(nb); bass = np.ones(nb); filt = np.zeros(nb); fx = np.zeros(nb); vg = np.ones(nb)
+    ig = np.ones(nb); og = np.zeros(nb)
+    stem = np.zeros(nb) if xm32 is not None else np.ones(nb)   # 1 = use stems, 0 = original audio
     vol[(tb < loc(0)) | (tb >= end_s)] = 0
 
-    def apply(ta, tz, name, role, opt):
+    def apply(ta, tz, name, role, opt, ov=8):
         m = (tb >= ta) & (tb < tz)
         u = (tb[m] - ta) / (tz - ta)
-        v, b_, f_, s_, g_ = preset_envelopes(name, role, u, opt)
+        if name == "mash":
+            v, b_, f_, s_, g_, i_, o_ = mash_envelopes(role, u, opt, ov)
+            ig[m] *= i_; og[m] = np.maximum(og[m], o_)
+        else:
+            v, b_, f_, s_, g_ = preset_envelopes(name, role, u, opt)
         vol[m] *= v; bass[m] *= b_; filt[m] += f_; fx[m] = np.maximum(fx[m], s_); vg[m] *= g_
+        stem[m] = 1.0
+        if role == "A":
+            stem[tb >= tz] = 1.0           # echo / tails after the end stay on the stem path
 
     if i > 0:
         t = trs[i - 1]
         if t.overlap_bars > 0:
-            apply(loc(0), loc(t.overlap_bars), t.preset, "B", t.options)
+            apply(loc(0), loc(t.overlap_bars), t.preset, "B", t.options, t.overlap_bars)
     if i < n - 1:
         t = trs[i]
         if t.overlap_bars > 0:
-            apply(loc(L - t.overlap_bars), end_s, t.preset, "A", t.options)
+            apply(loc(L - t.overlap_bars), end_s, t.preset, "A", t.options, t.overlap_bars)
         elif t.preset == "echo_cut":
             a2 = loc(L - 1)
             m = (tb >= a2) & (tb < end_s)
@@ -263,6 +328,7 @@ def mix_track(i: int, stretched: StretchResult, plan: MixPlan, layout: Layout, m
 
     lp = butter(4, BASS_HZ, "low", fs=sr, output="sos")
     vg_u, bass_u, vol_u = up(vg, 60), up(bass, 12) - 1.0, up(vol, 6)
+    ig_u, og_u, st_u = up(ig, 30), up(og, 60), up(stem, 40)
     do_filt = np.abs(filt).max() > 0.01
     send = tail = None
     D = 0
@@ -273,13 +339,18 @@ def mix_track(i: int, stretched: StretchResult, plan: MixPlan, layout: Layout, m
     out32 = np.empty((N, 2), np.float32)
     for c in range(2):  # every step is per channel: halves the float64 working set
         xi = xi32[:, c].astype(np.float64)
-        xi *= gain
+        xi *= ig_u
         xv = xv32[:, c].astype(np.float64)
-        xv *= gain
         xv *= vg_u
-        xi += xv                          # x = inst + voc * vocal gain
-        x = xi
+        xi += xv                          # stems: inst * inst gain + voc * vocal gain (+ overlay)
         del xv
+        if xo32 is not None:
+            xi += xo32[:, c].astype(np.float64) * og_u
+        if xm32 is not None:              # original audio outside the transitions (best quality)
+            xi *= st_u
+            xi += xm32[:, c].astype(np.float64) * (1.0 - st_u)
+        xi *= gain
+        x = xi
         low = sosfiltfilt(lp, x)          # zero-phase bass split: (x - low) + low * bass
         low *= bass_u
         x += low
@@ -294,7 +365,7 @@ def mix_track(i: int, stretched: StretchResult, plan: MixPlan, layout: Layout, m
             del wet
         out32[:, c] = x
         del x, xi
-    del xi32, xv32
+    del xi32, xv32, xm32, xo32
     st = int((t0 - pre) * sr)
     master.add(st, out32)
     return t0

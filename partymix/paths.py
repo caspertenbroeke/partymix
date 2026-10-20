@@ -61,3 +61,24 @@ def model_path() -> Path:
         if cand.exists():
             return cand
     return data_dir() / "models" / MODEL_NAME
+
+
+def log_path() -> Path:
+    return data_dir() / "log.txt"
+
+
+def setup_logging() -> None:
+    """Log to %LOCALAPPDATA%/PartyMix/log.txt (also from worker processes). Safe to call twice."""
+    import logging
+    from logging.handlers import RotatingFileHandler
+    lg = logging.getLogger("partymix")
+    if any(getattr(h, "_partymix", False) for h in lg.handlers):
+        return
+    try:
+        h = RotatingFileHandler(log_path(), maxBytes=2_000_000, backupCount=2, encoding="utf-8")
+    except OSError:
+        return
+    h.setFormatter(logging.Formatter("%(asctime)s [%(process)d] %(levelname)s %(message)s"))
+    h._partymix = True
+    lg.addHandler(h)
+    lg.setLevel(logging.INFO)

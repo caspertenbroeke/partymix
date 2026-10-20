@@ -255,6 +255,8 @@ def _child_main(worker_id: int, task_q, event_q, cancel_ev) -> None:  # pragma: 
                 raise Cancelled()
 
         try:
+            from partymix.paths import setup_logging
+            setup_logging()
             fn = _resolve(ref)
             result = fn(*args, progress=progress, cancel=token, **kwargs)
             if token.is_set():
@@ -268,6 +270,11 @@ def _child_main(worker_id: int, task_q, event_q, cancel_ev) -> None:  # pragma: 
                 event_q.put(("cancelled", job_id))
             else:
                 what = _job_label(ref)
+                try:
+                    import logging
+                    logging.getLogger("partymix").error("%s mislukt (%s)\n%s", what, args[:1], traceback.format_exc())
+                except Exception:
+                    pass
                 try:
                     event_q.put(("error", job_id, dutch_error(exc, what), traceback.format_exc()))
                 except Exception:  # unpicklable exception text, should not happen

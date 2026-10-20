@@ -70,3 +70,21 @@ def test_render_cancel(tmp_path):
     with pytest.raises(render.RenderCancelled):
         render.render_mix(_plan(), an, RenderSettings(out_path=str(tmp_path / "x.flac")), None, ev)
     assert not (tmp_path / "x.flac").exists()
+
+
+def test_render_mashup_with_overlay_and_original_audio(tmp_path):
+    """v0.3: mash transition (B's vocal hook over A's beat, pitch-shifted) + original audio outside windows."""
+    an = [_track(tmp_path, "a", 120.0, 0.05), _track(tmp_path, "b", 122.0, 0.2, freq=300.0)]
+    for a in an:   # original audio = inst + voc
+        d = a.cache_dir
+        x = sf.read(d + "/inst.flac")[0] + sf.read(d + "/voc.flac")[0]
+        sf.write(d + "/audio.flac", x, SR, subtype="PCM_24")
+    plan = MixPlan(tracks=[PlannedTrack("a", 0, 24), PlannedTrack("b", 0, 24)],
+                   transitions=[Transition(8, 121.0, "mash", {
+                       "dir": "fwd", "swap": 1.0, "ovl_from": 0.0,
+                       "ovl": {"src_bar": 16, "len": 8, "at": 0, "semis": 1}})],
+                   start_tempo=120.0, end_tempo=122.0, end_fade_bars=4)
+    out = tmp_path / "mash.flac"
+    files = render.render_mix(plan, an, RenderSettings(out_path=str(out), formats=["flac"]), None, None)
+    y = sf.read(files[0])[0]
+    assert len(y) > SR * 20 and np.isfinite(y).all() and np.abs(y).max() > 0.05
