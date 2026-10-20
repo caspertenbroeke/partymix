@@ -31,7 +31,7 @@ from .common import (MAX_STRETCH, bass_levels, cut_tempos, camelot_distance, lay
 
 BASS_ON = 7.5          # 4-bar mean bass level counted as "bass is in" (full bass)
 MIN_PLAY_SEC = 45.0
-MASHUPS = True        # v0.3: mashup transitions (one vocal + one beat at a time)
+MASHUPS = False       # v0.3 mashups sounded bad in practice (key detection not reliable enough); v2-style transitions
 END_FADE = 8
 INF = 1e9
 
@@ -365,7 +365,7 @@ def recommended_minutes(analyses_in_order: Sequence[TrackAnalysis]) -> float:
         best = None
         for e in p.grid(lo, hi):
             c = out_cost(p, e, END_FADE if last else 16, last=last)
-            c += 0.012 * abs(e - (o.W + 48))          # ~48 bars of main material feels "complete"
+            c += 0.010 * abs(e - (o.W + 72))          # ~72 bars of main material: let tracks breathe
             if best is None or c < best[0]:
                 best = (c, e)
         e = best[1] if best else min(p.n, o.W + 48)
